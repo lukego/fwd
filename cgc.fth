@@ -21,7 +21,7 @@
 
 \ If you care about efficiency then maybe you should stop reading here :-)
 
-create cgc			   \ Label for FORGET
+create cgc                         \ Label for FORGET
 
 0 value /block   \ the size of each memory block
 0 value #blocks  \ the number of blocks in the heap
@@ -36,7 +36,7 @@ create cgc			   \ Label for FORGET
 : heap    ( -- adr ) base #blocks 4 * + ;  \ .. the heap itself follows these sets.
 
 \ Set operations.
-: is?   ( value set -- ? ) + c@ 0<> ;	   \ membership
+: is?   ( value set -- ? ) + c@ 0<> ;      \ membership
 : set   ( value set --   ) + 1 swap c! ;   \ add
 : unset ( value set --   ) + 0 swap c! ;   \ remove
 : none  ( set       --   ) /block 0 fill ; \ remove all
@@ -73,7 +73,7 @@ create cgc			   \ Label for FORGET
 : scan-object ( block# -- )
     >start      ( start-block# )
     BEGIN       ( block# )
-	dup scan-block  dup marked set  dup scanned set
+        dup scan-block  dup marked set  dup scanned set
     1+ dup run-on is? not UNTIL  drop
 ;
 
@@ -88,7 +88,7 @@ defer scan-extra-roots  ' noop is scan-extra-roots
 
 : gc-loop ( -- )
     BEGIN
-	false ( progress? ) #blocks 0 DO i scan-block? or LOOP
+        false ( progress? ) #blocks 0 DO i scan-block? or LOOP
     0= UNTIL
 ;
 
@@ -99,8 +99,8 @@ defer scan-extra-roots  ' noop is scan-extra-roots
 \ Perform garbage collection
 : gc ( -- )
     prepare-for-collection  \ Reset mark/scan state
-    scan-roots	            \ Scan the root set and make initial marks
-    gc-loop	            \ Keep on marking while making progress
+    scan-roots              \ Scan the root set and make initial marks
+    gc-loop                 \ Keep on marking while making progress
     reclaim                 \ Free unmarked pages
 ;
 
@@ -109,39 +109,39 @@ defer scan-extra-roots  ' noop is scan-extra-roots
 
 : try-alloc ( #blocks -- adr )
     0  #blocks alloc-search-start ?DO ( #blocks free-run )
-	2dup = IF ( #blocks #blocks )
-	    \ Now we have found the right number of blocks.
-	    i to alloc-search-start
-	    drop              ( #blocks )
-	    negate i +        ( first-block )
-	    i over            ( first-block last-block first-block )
-	    DO                ( first-block )
-		i freed unset ( first-block )
-		dup i <> IF i run-on set THEN
-	    LOOP ( first-block )
-	    address           ( adr )
-	    unloop exit
-	THEN
-	i freed is? IF 1+ ELSE drop 0 THEN
+        2dup = IF ( #blocks #blocks )
+            \ Now we have found the right number of blocks.
+            i to alloc-search-start
+            drop              ( #blocks )
+            negate i +        ( first-block )
+            i over            ( first-block last-block first-block )
+            DO                ( first-block )
+                i freed unset ( first-block )
+                dup i <> IF i run-on set THEN
+            LOOP ( first-block )
+            address           ( adr )
+            unloop exit
+        THEN
+        i freed is? IF 1+ ELSE drop 0 THEN
     LOOP ( blocks free-run )
     alloc-search-start 0= IF
-	\ Out of memory
-	2drop 0
+        \ Out of memory
+        2drop 0
     ELSE \ Search again - this time from the beginning.
-	0 to alloc-search-start
-	drop recurse
+        0 to alloc-search-start
+        drop recurse
     THEN
 ;
 
 : alloc ( bytes -- adr )
     blocks dup ( blocks blocks )
     try-alloc ?dup 0= IF
-	gc
-	try-alloc ?dup 0= IF
-	    true abort" out of memory"
-	THEN
+        gc
+        try-alloc ?dup 0= IF
+            true abort" out of memory"
+        THEN
     ELSE
-	nip
+        nip
     THEN
 ;
 
