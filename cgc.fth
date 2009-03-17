@@ -14,6 +14,11 @@
 \ don't contain any metadata -- that's kept separately in sets of free
 \ blocks, marked blocks, etc (see below).
 
+\ TODO: Do automatic garbage collection for Openfirmware client programs.
+\ We need to parse the client program's ELF headers to discover where
+\ in memory its C global variables will be (and add them to the root
+\ set) and then override the client-services vocabulary's CLAIM word.
+
 \ If you care about efficiency then maybe you should stop reading here :-)
 
 create cgc			   \ Label for FORGET
@@ -196,6 +201,7 @@ defer scan-extra-roots  ' noop is scan-extra-roots
     /block alloc 2 /block * alloc 3 /block * alloc   ( b0 b1 b3 )
     gc
     ." check A: "  6 0 DO i is-taken LOOP  9 6 DO i is-free LOOP  cr
+    clear
     ." looking good" cr
 ;
 
