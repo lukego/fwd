@@ -69,7 +69,7 @@ my-address my-space encode-phys
     begin running? until
     1 ms \ wait 250us for codecs to initialize
     statests w@ 1 <> if
-	." hdaudio: expected only one codec but found this bitset: " statests w@ . cr
+        ." hdaudio: expected only one codec but found this bitset: " statests w@ . cr
     then
 ;
 
