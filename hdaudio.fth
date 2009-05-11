@@ -19,7 +19,7 @@ my-address my-space encode-phys
 " reg" property
 
 : dma-alloc   ( len -- adr ) " dma-alloc" $call-parent ;
-: dma-map-in  ( len -- adr ) " map-in" $call-parent ;
+: dma-map-in  ( adr len flag -- adr ) " map-in" $call-parent ;
 : dma-map-out ( adr len -- ) " map-out" $call-parent ;
 
 : icw       h# 60 au + ; \ Immediate Command Write
@@ -50,10 +50,30 @@ my-address my-space encode-phys
 : dma-on ( -- ) 2 corbctl c! ;
 : dma-off ( -- ) 0 corbctl c!  begin corbctl c@ 2 and 0= until ;
 
+\ Immediate command interface: This does not seem to work on my Asus EEE (?).
+\ I use the CORB/RIRB interface below instead.
+
 : command-ready? ( -- ? ) ics w@ 1 and 0= ;
 : response-ready? ( -- ? ) ics w@ 2 and 0<> ;
 
-\ CORB - Command interface towards codecs 
+: write-command ( c -- ) begin command-ready? until  icw ! ;
+: read-response ( -- r ) begin response-ready? until  irr @ ;
+
+: codec! ( chan nid verb -- )
+    running? 0<> abort" hdaudio not running"
+    -rot d# 28 lshift ( nid verb chan' )
+    -rot d# 20 lshift ( verb chan' nid' )
+    or or          ( command )
+    write-command
+    read-response
+;
+
+: get-parameter ( p -- u )
+    h# f0000 or
+    0 0 -rot codec!
+;
+
+\ CORB and RIRB command interface based on DMA buffers.
 
 d# 1024 constant /corb
 0 value corb-virt
@@ -89,35 +109,46 @@ d# 1024 constant /corb
 
 \ Response Inbound Ring Buffer (RIRB)
 
-d# 1024 constant /rirb
+d# 2048 constant /rirb
 0 value rirb-virt
 0 value rirb-phys
 0 value rirb-pos
 
 : init-rirb ( -- )
+    0 rirbctl c!  \ turn off dma
     /rirb dma-alloc  to rirb-virt
     rirb-virt /corb true dma-map-in  to rirb-phys
     rirb-phys rirblbase !
     0 rirbubase !
     2 rirbsize c! \ 256 entries
+    2 rirbctl c!  \ enable dma
 ;
 
-: write-command ( c -- ) begin command-ready? until  icw ! ;
-: read-response ( -- r ) begin response-ready? until  irr @ ;
+: rirb-running? ( -- ? ) rirbctl c@  2 and 0<> ;
 
-: codec! ( chan nid verb -- )
-    running? 0<> abort" hdaudio not running"
-    -rot d# 28 lshift ( nid verb chan' )
-    -rot d# 20 lshift ( verb chan' nid' )
-    or or          ( command )
-    write-command
-    read-response
+\ Stream buffers
+\ BDL = Buffer Descriptor List
+\ BD  = Buffer Descriptor
+
+d# 16 value /bd
+d# 256 /bd * value /bdl
+
+0 value bdl-virt
+0 value bdl-phys
+
+struct ( buffer descriptor )
+    8 field >address  \ physical address of buffer
+    4 field >length   \ length of buffer in bytes
+    1 field >flags    \ bit 0: Interrupt On Completion (IOC) flag
+    \ 31 bytes reserved
+drop
+
+: init-buffers ( -- )
+    /bdl dma-alloc to bdl-virt
+    bdl-virt /bdl true dma-map-in  to bdl-phys
 ;
 
-: get-parameter ( p -- u )
-    h# f0000 or
-    0 0 -rot codec!
-;
+\ Main initialization
 
 : my-w@  ( offset -- w )  my-space +  " config-w@" $call-parent  ;
 : my-w!  ( w offset -- )  my-space +  " config-w!" $call-parent  ;
