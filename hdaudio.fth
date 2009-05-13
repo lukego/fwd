@@ -3,12 +3,12 @@
 
 ." loading hdaudio" cr
 
-\ 0 [if] \ Only want to do these bits the first time..
+[ifndef] hdaudio-loaded
  dev /pci8086,2668
  extend-package
  " hdaudio" name
   0 value au
-\ [then]
+[then]
 
 \ Configuration space registers
 my-address my-space encode-phys
@@ -19,8 +19,8 @@ my-address my-space encode-phys
 " reg" property
 
 : dma-alloc   ( len -- adr ) " dma-alloc" $call-parent ;
-: dma-map-in  ( adr len flag -- adr ) " map-in" $call-parent ;
-: dma-map-out ( adr len -- ) " map-out" $call-parent ;
+: dma-map-in  ( adr len flag -- adr ) " dma-map-in" $call-parent ;
+: dma-map-out ( adr len -- ) " dma-map-out" $call-parent ;
 
 : icw       h# 60 au + ; \ Immediate Command Write
 : irr       h# 64 au + ; \ Immediate Response Read
@@ -59,7 +59,7 @@ my-address my-space encode-phys
 : write-command ( c -- ) begin command-ready? until  icw ! ;
 : read-response ( -- r ) begin response-ready? until  irr @ ;
 
-: codec! ( chan nid verb -- )
+: immediate-codec! ( chan nid verb -- )
     running? 0<> abort" hdaudio not running"
     -rot d# 28 lshift ( nid verb chan' )
     -rot d# 20 lshift ( verb chan' nid' )
@@ -70,7 +70,7 @@ my-address my-space encode-phys
 
 : get-parameter ( p -- u )
     h# f0000 or
-    0 0 -rot codec!
+    0 0 -rot immediate-codec!
 ;
 
 \ CORB and RIRB command interface based on DMA buffers.
@@ -82,6 +82,7 @@ d# 1024 constant /corb
 
 : init-corb ( -- )
     /corb dma-alloc  to corb-virt
+    corb-virt /corb 0 fill
     corb-virt /corb true dma-map-in  to corb-phys
     \ Turn off DMA
     0 corbctl c!
@@ -92,9 +93,7 @@ d# 1024 constant /corb
     2 corbctl c!       \ Enable DMA
 ;
 
-: corb-tx-sync ( -- )
-    begin corbrp w@ corb-pos = until
-;    
+: corb-tx-sync ( -- ) begin corbrp w@ corb-pos = until ;    
 
 : corb-tx ( u -- )
     corb-pos 1+ d# 256 mod to corb-pos
@@ -116,6 +115,7 @@ d# 2048 constant /rirb
 
 : init-rirb ( -- )
     0 rirbctl c!  \ turn off dma
+    rirb-virt /rirb 0 fill
     /rirb dma-alloc  to rirb-virt
     rirb-virt /corb true dma-map-in  to rirb-phys
     rirb-phys rirblbase !
@@ -124,7 +124,27 @@ d# 2048 constant /rirb
     2 rirbctl c!  \ enable dma
 ;
 
+: rirb-ready? ( -- ) rirb-pos rirbwp w@ <> ;
+
+: rirb-read ( -- resp solicited? )
+    rirb-pos 1+ d# 256 mod to rirb-pos
+    begin rirb-ready?  key? abort" key interrupt" until
+    rirb-pos 2 * cells rirb-virt + ( adr )
+    dup @                          ( adr resp )
+    swap cell+ @                   ( resp resp-ex )
+    h# 10 and 0=                   ( resp? solicited? )
+;
+
+: rirb-rx ( -- )
+    begin
+        rirb-read ( resp solicited? )
+        if exit else ." unsolicited response: " . cr then
+    again
+;
+
 : rirb-running? ( -- ? ) rirbctl c@  2 and 0<> ;
+
+: codec! ( req -- resp ) corb-tx rirb-rx ;
 
 \ Stream buffers
 \ BDL = Buffer Descriptor List
@@ -182,4 +202,10 @@ drop
 : close ( -- )
     reset
 ;
+
+[ifndef] hdaudio-loaded
+select /hdaudio
+[then]
+
+create hdaudio-loaded
 
