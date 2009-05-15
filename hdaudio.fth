@@ -124,11 +124,11 @@ d# 2048 constant /rirb
     2 rirbctl c!  \ enable dma
 ;
 
-: rirb-ready? ( -- ) rirb-pos rirbwp w@ <> ;
+: rirb-data? ( -- ) rirb-pos rirbwp w@ <> ;
 
 : rirb-read ( -- resp solicited? )
+    begin rirb-data?  key? abort" key interrupt" until
     rirb-pos 1+ d# 256 mod to rirb-pos
-    begin rirb-ready?  key? abort" key interrupt" until
     rirb-pos 2 * cells rirb-virt + ( adr )
     dup @                          ( adr resp )
     swap cell+ @                   ( resp resp-ex )
@@ -144,7 +144,25 @@ d# 2048 constant /rirb
 
 : rirb-running? ( -- ? ) rirbctl c@  2 and 0<> ;
 
-: codec! ( req -- resp ) corb-tx rirb-rx ;
+: cmd ( req -- resp ) corb-tx rirb-rx ;
+
+\ Parameters
+
+: param@ ( n -- u ) f0000 or cmd ;
+
+: param: ( "name" "id" -- value )
+    create get-hex# ,
+    does> @ param@
+;
+
+param: vendor-id      00
+param: revision-id    02
+param: subnodes       04
+param: function-type  05
+param: audio-parameter 08
+param: widget-capabilities 09
+param: pcm-support    0a
+param: stream-formats 0b
 
 \ Stream buffers
 \ BDL = Buffer Descriptor List
