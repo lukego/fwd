@@ -1,6 +1,12 @@
 \ Intel HD Audio driver (work in progress)
 \ Copyright 2009 Luke Gorrie <luke@bup.co.nz>
 
+\ Section and subsection comments - for Emacs
+: \\  postpone \ ; immediate
+: \\\ postpone \ ; immediate
+
+\\ Device node
+
 ." loading hdaudio" cr
 
 [ifndef] hdaudio-loaded
@@ -10,7 +16,8 @@
   0 value au
 [then]
 
-\ Configuration space registers
+\\ DMA setup
+
 my-address my-space encode-phys
 0 encode-int encode+  0 encode-int encode+
 
@@ -18,9 +25,23 @@ my-address my-space encode-phys
 0 encode-int encode+  h# 4000 encode-int encode+
 " reg" property
 
+: my-w@  ( offset -- w )  my-space +  " config-w@" $call-parent  ;
+: my-w!  ( w offset -- )  my-space +  " config-w!" $call-parent  ;
+
+: map-regs  ( -- )
+    0 0 my-space h# 0300.0010 +  h# 4000  " map-in" $call-parent to au
+    4 my-w@  6 or  4 my-w!
+;
+: unmap-regs  ( -- )
+    4 my-w@  7 invert and  4 my-w!
+    au h# 4000 " map-out" $call-parent
+;
+
 : dma-alloc   ( len -- adr ) " dma-alloc" $call-parent ;
 : dma-map-in  ( adr len flag -- adr ) " dma-map-in" $call-parent ;
 : dma-map-out ( adr len -- ) " dma-map-out" $call-parent ;
+
+\\ Register definitions
 
 : icw       h# 60 au + ; \ Immediate Command Write
 : irr       h# 64 au + ; \ Immediate Response Read
@@ -43,29 +64,30 @@ my-address my-space encode-phys
 : rirbsts   h# 5d au + ;
 : rirbsize  h# 5e au + ;
 
-0 value sd
-
-: sd0ctl   h# 80 sd + au + ; \ 3-byte register.. wtf?
-: sd0sts   h# 83 sd + au + ;
-: sd0lpib  h# 84 sd + au + ;
-: sd0cbl   h# 88 sd + au + ;
-: sd0lvi   h# 8c sd + au + ;
-: sd0fifos h# 90 sd + au + ;
-: sd0fmt   h# 92 sd + au + ;
-: sd0bdpl  h# 98 sd + au + ;
-: sd0bdpu  h# 9c sd + au + ;
-
-: sd0licba h# 2084 au + ;
-
-: running? ( -- ? ) gctl @ 1 and 0<> ;
 : reset ( -- ) 0 gctl ! ;
 : start ( -- ) 1 gctl ! ;
+: running? ( -- ? ) gctl @ 1 and 0<> ;
 
-: dma-on ( -- ) 2 corbctl c! ;
-: dma-off ( -- ) 0 corbctl c!  begin corbctl c@ 2 and 0= until ;
+\\\ Stream Descriptors
 
-\ Immediate command interface: This does not seem to work on my Asus EEE (?).
-\ I use the CORB/RIRB interface below instead.
+\ Stream descriptor index. 
+0 value sd#
+: sd+ ( offset -- adr ) sd# h# 20 * + au + ;
+
+: sdctl   h# 80 sd+ ;
+: sdsts   h# 83 sd+ ;
+: sdlpib  h# 84 sd+ ;
+: sdcbl   h# 88 sd+ ;
+: sdlvi   h# 8c sd+ ;
+: sdfifos h# 90 sd+ ;
+: sdfmt   h# 92 sd+ ;
+: sdbdpl  h# 98 sd+ ;
+: sdbdpu  h# 9c sd+ ;
+: sdlicba h# 2084 sd+ ;
+
+\\ Immediate command interface
+\ XXX The spec makes the immediate command registers optional and my
+\ EEE doesn't seem to support them.
 
 : command-ready? ( -- ? ) ics w@ 1 and 0= ;
 : response-ready? ( -- ? ) ics w@ 2 and 0<> ;
@@ -82,26 +104,22 @@ my-address my-space encode-phys
     read-response
 ;
 
-: get-parameter ( p -- u )
-    h# f0000 or
-    0 0 -rot immediate-codec!
-;
+\\ CORB/RIRB command interface
+\ DMA-based circular command / response buffers.
 
-\ CORB and RIRB command interface based on DMA buffers.
+\ XXX I have hard-coded the buffers to be the maximum number of
+\ entries. That's all my EEE supports and I was too lazy to make a
+\ dynamic selection. -luke
+
+\\\ CORB - Command Output Ring Buffer
 
 d# 1024 constant /corb
 0 value corb-virt
 0 value corb-phys
 0 value corb-pos
 
-: corb-dma-off ( -- )
-    0 corbctl c!
-    begin corbctl c@  2 and 0= until \ read value back
-;
-
-: corb-dma-on ( -- )
-    2 corbctl c!       \ Enable DMA
-;    
+: corb-dma-on  ( -- ) 2 corbctl c! ;
+: corb-dma-off ( -- ) 0 corbctl c!  begin corbctl c@  2 and 0= until ;
 
 : init-corb ( -- )
     /corb dma-alloc  to corb-virt
@@ -114,19 +132,16 @@ d# 1024 constant /corb
     corb-dma-on
 ;
 
-: corb-tx-sync ( -- )
-\    corbrp w@ corb-pos = if true else debug-me then
-    begin corbrp w@ corb-pos = until
-;
+: wait-for-corb-sync ( -- ) begin corbrp w@ corb-pos = until ;
 
 : corb-tx ( u -- )
     corb-pos 1+ d# 256 mod to corb-pos
     corb-pos cells corb-virt + ! ( )
     corb-pos corbwp w!
-    corb-tx-sync
+    wait-for-corb-sync
 ;
 
-\ Response Inbound Ring Buffer (RIRB)
+\\\ RIRB - Response Inbound Ring Buffer
 
 d# 256 2* cells constant /rirb
 0 value rirb-virt
@@ -165,7 +180,9 @@ d# 256 2* cells constant /rirb
     again
 ;
 
-: rirb-running? ( -- ? ) rirbctl c@  2 and 0<> ;
+\\ Commands to codecs
+
+0 0  value codec value node  \ current target for commands
 
 : encode-command ( codec node verb -- )
     -rot d# 20 lshift ( verb codec node' )
@@ -174,17 +191,13 @@ d# 256 2* cells constant /rirb
 ;
 
 : command ( codec node verb -- response ) encode-command corb-tx rirb-rx ;
-: noop-command ( -- ) 0 corb-tx ;
 
-0 value codec
-0 value node
-
-: set-node ( codec node -- ) to node to codec ;
-: set-root ( -- ) 0 0 set-node ;
-
+\ Send 
 : cmd ( verb -- resp ) codec node rot command ;
 
-\ Parameters
+\\\ Getting parameters
+\ The use of CREATE DOES here is probably gratuitious. But how will I
+\ learn if I never use it? -luke
 
 : param@ ( n -- u ) f0000 or cmd ;
 
@@ -223,14 +236,15 @@ param: 13 volume-caps
 : color          ( -- c ) config-default d# 12 rshift  f and ;
 : connectivity   ( -- c ) config-default d# 30 rshift ;
 
-\ Tree walking
+\\ Widget graph
+\\\ Traversal
 
 ' noop value do-xt
 0 value do-tree-level
 
-: do-subtree ( codec node -- )
-    set-node       ( )
-    do-xt execute  ( )
+: do-subtree ( xt codec node -- )
+    to node to codec ( )
+    do-xt execute    ( )
     codec  first-subnode #subnodes bounds ?do ( codec )
         do-tree-level 1 + to do-tree-level
         dup i recurse
@@ -241,105 +255,41 @@ param: 13 volume-caps
 
 : do-tree ( xt -- ) to do-xt  0 0 do-subtree ;
 
-\ Main initialization
+\\\ Find and setup the interesting widgets
 
-: my-w@  ( offset -- w )  my-space +  " config-w@" $call-parent  ;
-: my-w!  ( w offset -- )  my-space +  " config-w!" $call-parent  ;
+0 value speaker
+0 value speaker-output
 
-: map-regs  ( -- adr )
-   0 0 my-space h# 0300.0010 +  h# 4000  " map-in" $call-parent to au
-   4 my-w@  6 or  4 my-w!
+: widget-type ( -- u ) widget-caps d# 20 rshift 7 and ;
+: pin-widget? ( -- ? ) widget-type 4 = ;
+: builtin?    ( -- ? ) connectivity 2 = ;
+: speaker?    ( -- ? ) default-device 1 = ;
+: mic?        ( -- ? ) default-device h# a = ;
+: connection0 ( -- n ) f0200 cmd ( connection-list ) ff and ;
+
+: init-speaker ( -- )
+    node to speaker
+    \ FIXME: Assumptions -
+    \ Connection #0 is selected by default
+    \ Connection #0 is an Output Converter
+    connection0 to speaker-output
+
+    speaker-output to node
+    h# 70610 cmd drop         \ stream 1, channel 0
+    h# a0000 cmd drop         \ format - 48khz 8-bit mono
 ;
-: unmap-regs  ( -- )
-   4 my-w@  7 invert and  4 my-w!
-   " map-out" $call-parent
-;
 
-: init ( -- ) ;
-
-: open ( -- flag ) 
-    map-regs
-    reset
-    0 wakeen w!  0 statests w!
-    start
-    begin running? until
-    1 ms \ wait 250us for codecs to initialize
-    statests w@ 1 <> if
-        ." hdaudio: expected one codec but found this bitset: " statests w@ . cr
+: discover-pins ( -- )
+    pin-widget? if
+        builtin? speaker? and if
+            init-speaker
+        then
     then
-    init-corb
-    init-rirb
-    true
 ;
 
-: close ( -- )
-    reset
-;
-
-\ Channel 0
-
-struct ( buffer descriptor )
-    4 field >bd-uaddr
-    4 field >bd-laddr
-    4 field >bd-len
-    4 field >bd-ioc
-constant /bd
-
-0 value bdl-virt
-0 value bdl-phys
-d# 256 /bd * value /bdl
-
-: alloc-bdl ( -- )
-    /bdl dma-alloc to bdl-virt
-    bdl-virt /bdl 0 fill
-    bdl-virt /bdl true dma-map-in to bdl-phys
-;
-
-0 value buffer1-virt
-0 value buffer1-phys
-0 value buffer2-virt
-0 value buffer2-phys
-d# 4096 value /buffer
-
-: b-d ( n -- adr ) /bd * bdl-virt + ;
-
-: init-buffers ( -- )
-    /buffer dma-alloc to buffer1-virt
-    buffer1-virt /buffer true dma-map-in to buffer1-phys
-    buffer1-phys  0 b-d >bd-laddr !
-    /buffer  0 b-d >bd-len !
-    buffer1-virt /buffer -1 fill
-    1  0 b-d >bd-ioc c! \ interrupt on completion
-
-    /buffer dma-alloc to buffer2-virt
-    buffer2-virt /buffer true dma-map-in to buffer2-phys
-    buffer2-phys  1 b-d >bd-laddr !
-    /buffer  1 b-d >bd-len !
-    buffer2-virt /buffer -1 fill
-    1  1 b-d >bd-ioc c! \ interrupt on completion
-;
-
-: prepare ( -- )
-    alloc-bdl
-    init-buffers
-;
-
-: blast ( -- )
-    h# 00 sd0ctl    c!       \ turn off
-    h# 18 sd0ctl 2 + c!       \ channel 1, output - do this first
-    h# 00 sd0ctl 1 + c!
-    h# 1C sd0ctl 3 + c!       \ clear flags
-\    h# 1C100000 sd0ctl ! \ stream 1
-    d# 1000 sd0cbl !      \ number of samples (fixme)
-    1 sd0lvi c!          \ #1 is last valid entry
-    0 sd0fmt !           \ 48KHz
-    bdl-phys sd0bdpl !   \ install buffer descriptor list
-    0        sd0bdpu !
-    2 sd0ctl c!          \ run
-;
+\\\ Inspecting widgets
 
 : .node ( -- )
-\    widget-caps d# 20 rshift  7 and  4 <> if exit then
     codec .d ." / " node .d
     connections .
     config-default .
@@ -399,73 +349,128 @@ d# 4096 value /buffer
         6   of ." volume knob"    endof
         7   of ." beep generator" endof
         dup of exit               endof
-\        dup of ." unknown"        endof
     endcase
     cr
 ;
 
-\ Hardware discovery
+\\ Streams
+\\\ Stream descriptors
 
-0 value speaker
-0 value speaker-output
+struct ( buffer descriptor )
+    4 field >bd-uaddr
+    4 field >bd-laddr
+    4 field >bd-len
+    4 field >bd-ioc
+constant /bd
 
-: widget-type ( -- u ) widget-caps d# 20 rshift 7 and ;
-: pin-widget? ( -- ? ) widget-type 4 = ;
-: builtin?    ( -- ? ) connectivity 2 = ;
-: speaker?    ( -- ? ) default-device 1 = ;
-: mic?        ( -- ? ) default-device h# a = ;
-: connection0 ( -- n ) f0200 cmd ( connection-list ) ff and ;
+0 value bdl-virt
+0 value bdl-phys
+d# 256 /bd * value /bdl
 
-: init-speaker ( -- )
-    node to speaker
-    \ FIXME: Assumptions -
-    \ Connection #0 is selected by default
-    \ Connection #0 is an Output Converter
-    connection0 to speaker-output
-
-    speaker-output to node
-    h# 70610 cmd drop         \ stream 1, channel 0
-    h# a0000 cmd drop         \ format - 48khz 8-bit mono
+: alloc-bdl ( -- )
+    /bdl dma-alloc to bdl-virt
+    bdl-virt /bdl 0 fill
+    bdl-virt /bdl true dma-map-in to bdl-phys
 ;
 
-: discover-pins ( -- )
-    pin-widget? if
-        builtin? speaker? and if
-            init-speaker
-        then
-    then
+\ XXX just using the (minimum) two sound buffers.
+\ FIXME: simpler to allocate all the sound buffers from contiguous memory.
+0 value buffers-virt
+0 value buffers-phys
+d# 4096 value /buffer
+      2 value #buffers
+/buffer #buffers * value /buffers
+
+: buffer-descriptor ( n -- adr ) /bd * bdl-virt + ;
+: buffer-virt ( n -- adr ) /buffer * buffers-virt + ;
+: buffer-phys ( n -- adr ) /buffer * buffers-phys + ;
+
+: alloc-sound-buffers ( -- )
+    /buffers dma-alloc to buffers-virt
+    buffers-virt /buffers true dma-map-in to buffers-phys
+    buffers-virt /buffers -1 fill
 ;
 
-\ Testing
-
-: testit ( -- )
-    bdl-virt 0= if
-        alloc-bdl
-        init-buffers
-        ['] discover-pins do-tree
-    then
-    blast
-    d# 5 0 do
-        sd0sts c@ 0<> if
-            ." sd: " sd . ." link position: " sd0lpib w@ . ." status: " sd0sts c@ . cr
-            unloop exit
-        then
-        d# 2 ms
+: init-sound-buffers ( -- )
+    buffers-virt 0= if alloc-sound-buffers then
+    #buffers 0 do
+        i buffer-phys  i buffer-descriptor >bd-laddr !
+        /buffer  i buffer-descriptor >bd-len !
     loop
 ;
 
-: testem ( -- )
-    0 to sd
-    d# 20 0 do
-        testit
-        h# 20 sd + to sd
-    loop
+\\\ Starting and stopping channels
+
+: assert-stream-reset   ( -- ) 1 sdctl c!  begin sdctl c@ 1 and 1 = until ;
+: deassert-stream-reset ( -- ) 0 sdctl c!  begin sdctl c@ 1 and 0 = until ;
+
+: reset-stream ( -- ) assert-stream-reset deassert-stream-reset ;
+: stop-stream  ( -- ) 0 sdctl c! begin sdctl c@ 2 and 0=  until ;
+: start-stream ( -- ) 2 sdctl c! begin sdctl c@ 2 and 0<> until ;
+
+\\ Device open and close
+
+: init-all ( -- ) init-corb init-rirb init-sound-buffers ;
+
+\ FIXME: open count
+
+: init ( -- ) ;
+
+: open ( -- flag ) 
+    map-regs
+    reset
+    0 wakeen w!  0 statests w!
+    start
+    begin running? until
+    1 ms \ wait 250us for codecs to initialize
+    statests w@ 1 <> if
+        ." hdaudio: expected one codec but found this bitset: " statests w@ . cr
+    then
+    init-all
+    true
+;
+
+: close ( -- )
+    reset
+    unmap-regs
+;
+
+\\ Testing
+
+\ Channel 0
+
+: random ( -- n ) counter @ ;
+
+: randomize-sound-buffers ( -- )
+    buffers-virt /buffers bounds do random i c! loop
+;
+
+: test-stream-output ( -- )
+    4 to sd#     \ first output stream
+    reset-stream
+    randomize-sound-buffers
+    h# 18 sdctl 2 + c!       \ channel 1, output - do this first
+    h# 00 sdctl 1 + c!
+    h# 1C sdctl 3 + c!       \ clear flags
+    d# 1000 sdcbl !          \ number of samples (fixme)
+    1 sdlvi c!               \ #1 is last valid entry
+    0 sdfmt !                \ 48KHz
+    bdl-phys sdbdpl !        \ install buffer descriptor list
+    0        sdbdpu !
+    start-stream
+;
+
+: submitted? ( -- ) sdlpib w@ ;
+: beat-into-submission ( -- )
+    begin
+        test-stream-output
+        close open
+        key? abort" keyboard interrupt"
+    submitted? until
 ;
 
 [ifndef] hdaudio-loaded
 select /hdaudio
-[else]
-close open
 [then]
 
 create hdaudio-loaded
