@@ -129,6 +129,7 @@ d# 1024 constant /corb
     corb-phys corblbase !
     0 corbubase !
     2 corbsize c!      \ 256 entries
+    corbrp w@ to corb-pos
     corb-dma-on
 ;
 
@@ -159,6 +160,7 @@ d# 256 2* cells constant /rirb
     rirb-phys rirblbase !
     0 rirbubase !
     2 rirbsize c! \ 256 entries
+    rirbwp w@ to rirb-pos
     rirb-dma-on
 ;
 
@@ -236,6 +238,26 @@ param: 13 volume-caps
 : color          ( -- c ) config-default d# 12 rshift  f and ;
 : connectivity   ( -- c ) config-default d# 30 rshift ;
 
+: gain/mute ( output? left? -- gain mute? )
+    0 swap if h# 2000 or then
+    swap   if h# 8000 or then
+    h# b0000 or  cmd
+    dup h# 7f and      ( res gain )
+    swap h# 80 and 0<> ( gain mute? )
+;
+
+: gain/mute! ( gain mute? -- )
+    if h# 80 or then  ( gain/mute )
+    h# 3f000 or       \ set output, input, left, right
+    cmd
+;
+
+: unmute-in  ( -- ) h# 37000 cmd drop ;
+: unmute-out ( -- ) h# 3b000 cmd drop ;
+
+: gain-steps ( -- ) f0012 cmd  8 rshift 3f and ;
+: max-gain! ( -- ) gain-steps false gain/mute! ;
+
 \\ Widget graph
 \\\ Traversal
 
@@ -257,15 +279,26 @@ param: 13 volume-caps
 
 \\\ Find and setup the interesting widgets
 
-0 value speaker
-0 value speaker-output
-
-: widget-type ( -- u ) widget-caps d# 20 rshift 7 and ;
+: widget-type ( -- u ) widget-caps d# 20 rshift f and ;
 : pin-widget? ( -- ? ) widget-type 4 = ;
 : builtin?    ( -- ? ) connectivity 2 = ;
 : speaker?    ( -- ? ) default-device 1 = ;
+: headphone?  ( -- ? ) default-device 2 = ;
 : mic?        ( -- ? ) default-device h# a = ;
 : connection0 ( -- n ) f0200 cmd ( connection-list ) ff and ;
+
+0 [if]
+
+0 value speaker
+0 value headphone
+0 value speaker-output
+
+: init-output-pin ( -- )
+    h# f0100 cmd drop          \ select input 0
+    h# 7f false gain/mute!
+    70c02 cmd drop             \ external amp enable
+    f07c0 cmd drop             \ pin widget output enable
+;
 
 : init-speaker ( -- )
     node to speaker
@@ -274,9 +307,10 @@ param: 13 volume-caps
     \ Connection #0 is an Output Converter
     connection0 to speaker-output
 
+    init-output-pin
     speaker-output to node
-    h# 70610 cmd drop         \ stream 1, channel 0
-    h# a0000 cmd drop         \ format - 48khz 8-bit mono
+    h# 706.11 cmd drop         \ stream 1, channel 0
+    h# 200.10 cmd drop         \ format - 48khz 16-bit mono
 ;
 
 : discover-pins ( -- )
@@ -284,73 +318,177 @@ param: 13 volume-caps
         builtin? speaker? and if
             init-speaker
         then
+        headphone? if
+            init-output-pin
+        then
     then
+;
+
+[then]
+
+\\\ Realtek ALC269 widget config
+
+0 [if]
+
+h# 15 value speaker \ headphone
+h# 0c value mixer
+h# 02 value output
+
+: setup-speaker ( -- )
+    speaker to node
+    h# f0100 cmd drop          \ select input 0
+    unmute
+\    70c02 cmd drop             \ external amp enable
+    707c0 cmd drop             \ pin widget output enable
+;
+
+: setup-mixer ( -- )
+    mixer to node
+    
+\    h# 706.11 cmd drop         \ stream 1, channel 0
+\    h# 200.10 cmd drop         \ format - 48khz 16-bit mono
+    unmute
+;
+
+: setup-output ( -- )
+    output to node
+    h# 706.11 cmd drop         \ stream 1, channel 0
+    h# 200.10 cmd drop         \ format - 48khz 16-bit mono
+    unmute
+;
+
+: setup-widgets ( -- ) setup-speaker setup-mixer setup-output ;
+
+[then]
+
+: setup-connections ( -- )
+    \ inputs
+    7 to node
+    3701d cmd drop
+    37003 cmd drop
+    70724 cmd drop
+    24 to node
+    70100 cmd drop
+    37000 cmd drop
+    3b000 cmd drop
+
+    c to node
+    70100 cmd drop \ select connection #0
+    unmute-in
+    unmute-out
+    14 to node
+    70100 cmd drop
+    unmute-in
+    unmute-out
+    unmute-out
+    70740 cmd drop \ pin widget output enable
+    c to node
+    unmute-in
+    unmute-out
+    15 to node
+    70100 cmd drop \ select connection #0
+    unmute-in
+    unmute-out
+    unmute-out
+    707c0 cmd drop \ pin widget output enable, headphone enable
+    7 to node
+    70100 cmd drop \ connection #0
+    1 to node
+    70500 cmd drop \ function group power on
+;
+
+: setup-volume ( -- )
+    7 to node
+    3602f cmd drop \ volume
+    3502f cmd drop \ volume
+    2 to node  max-gain!
+    3 to node  max-gain!
+;
+
+: setup-stream ( -- )
+    2 to node
+    70650 cmd drop \ stream / channel select
+    20011 cmd drop \ converter format
+;
+
+: setup-widgets ( -- )
+    setup-connections setup-volume \ setup-stream
 ;
 
 \\\ Inspecting widgets
 
+: .connectivity ( -- )
+    case connectivity
+        0 of ." external " endof
+        1 of ." unused " endof
+        2 of ." builtin " endof
+        3 of ." builtin/external " endof
+    endcase
+;
+
+: .color ( -- )
+    case color
+        1 of ." black " endof
+        2 of ." grey " endof
+        3 of ." blue " endof
+        4 of ." green " endof
+        5 of ." red " endof
+        6 of ." orange " endof
+        7 of ." yellow " endof
+        8 of ." purple " endof
+        9 of ." pink " endof
+        e of ." white " endof
+    endcase
+;
+
+: .location ( -- )
+    case location
+        1 of ." rear " endof
+        2 of ." front " endof
+        3 of ." left " endof
+        4 of ." right " endof
+        5 of ." top " endof
+        6 of ." bottom " endof
+        7 of ." special " endof
+    endcase
+;    
+
+: .default-device ( -- )
+    case default-device
+        0 of ." line out)" endof
+        1 of ." speaker)"  endof
+        2 of ." HP out)"   endof
+        3 of ." CD)"       endof
+        4 of ." SPDIF out)" endof
+        5 of ." digital other out)" endof
+        6 of ." modem line side)" endof
+        7 of ." modem handset side)" endof
+        8 of ." line in)" endof
+        9 of ." aux)" endof
+        a of ." mic in)" endof
+        b of ." telephony)" endof
+        c of ." SPDIF in)" endof
+        d of ." digital other in)" endof
+        dup of ." unknown)" endof
+    endcase
+;
+
 : .node ( -- )
+    do-tree-level spaces
     codec .d ." / " node .d
-    connections .
-    config-default .
-    widget-caps d# 20 rshift  7 and ( type )
-    case
+    f0200 cmd lbsplit 4 0 do <# u# u# u#> type space loop 2 spaces
+    widget-type case
         0   of ." audio output"   endof
         1   of ." audio input"    endof
         2   of ." audio mixer"    endof
         3   of ." audio selector" endof
-        4   of ." pin widget ("
-               case connectivity
-                   0 of ." external " endof
-                   1 of ." unused " endof
-                   2 of ." builtin " endof
-                   3 of ." builtin/external " endof
-               endcase
-               case color
-                   1 of ." black " endof
-                   2 of ." grey " endof
-                   3 of ." blue " endof
-                   4 of ." green " endof
-                   5 of ." red " endof
-                   6 of ." orange " endof
-                   7 of ." yellow " endof
-                   8 of ." purple " endof
-                   9 of ." pink " endof
-                   e of ." white " endof
-               endcase
-               case location
-                   1 of ." rear " endof
-                   2 of ." front " endof
-                   3 of ." left " endof
-                   4 of ." right " endof
-                   5 of ." top " endof
-                   6 of ." bottom " endof
-                   7 of ." special " endof
-               endcase
-               case default-device
-                   0 of ." line out)" endof
-                   1 of ." speaker)"  endof
-                   2 of ." HP out)"   endof
-                   3 of ." CD)"       endof
-                   4 of ." SPDIF out)" endof
-                   5 of ." digital other out)" endof
-                   6 of ." modem line side)" endof
-                   7 of ." modem handset side)" endof
-                   8 of ." line in)" endof
-                   9 of ." aux)" endof
-                   a of ." mic in)" endof
-                   b of ." telephony)" endof
-                   c of ." SPDIF in)" endof
-                   d of ." digital other in)" endof
-                   dup of ." unknown)" endof
-               endcase
-            endof
+        4   of ." pin widget (" .connectivity .color .location .default-device endof
         5   of ." power widget"   endof
         6   of ." volume knob"    endof
         7   of ." beep generator" endof
         dup of exit               endof
     endcase
-    cr
+    cr  exit? abort" "
 ;
 
 \\ Streams
@@ -373,8 +511,7 @@ d# 256 /bd * value /bdl
     bdl-virt /bdl true dma-map-in to bdl-phys
 ;
 
-\ XXX just using the (minimum) two sound buffers.
-\ FIXME: simpler to allocate all the sound buffers from contiguous memory.
+\ Sound buffers are allocated in contiguous memory.
 0 value buffers-virt
 0 value buffers-phys
 d# 4096 value /buffer
@@ -441,36 +578,66 @@ d# 4096 value /buffer
 
 : random ( -- n ) counter @ ;
 
-: randomize-sound-buffers ( -- )
-    buffers-virt /buffers bounds do random i c! loop
+: init-square-wave ( -- )
+    buffers-virt /buffers bounds do
+        i d# 48 bounds do
+            4000 i w!
+        2 +loop
+        i d# 48 bounds do
+            -4000 i d# 48 + w!
+        2 +loop
+    d# 96 +loop
 ;
 
 : test-stream-output ( -- )
-    4 to sd#     \ first output stream
     reset-stream
-    randomize-sound-buffers
-    h# 18 sdctl 2 + c!       \ channel 1, output - do this first
-    h# 00 sdctl 1 + c!
+    init-square-wave
+\    h# 54 sdctl 2 + c!       \ channel 1, output - do this first
+\    h# 00 sdctl 1 + c!
     h# 1C sdctl 3 + c!       \ clear flags
-    d# 1000 sdcbl !          \ number of samples (fixme)
+    h# 540000 sdctl !
+    /buffers sdcbl !         \ number of bytes in cyclic buffers
     1 sdlvi c!               \ #1 is last valid entry
-    0 sdfmt !                \ 48KHz
+    11 sdfmt !               \ 16-bit 48KHz stereo
     bdl-phys sdbdpl !        \ install buffer descriptor list
     0        sdbdpu !
+;
+
+: blast-sound ( -- )
+    4 to sd#
+\    ['] discover-pins do-tree
+    setup-widgets
+    test-stream-output
+    setup-stream
     start-stream
 ;
 
-: submitted? ( -- ) sdlpib w@ ;
-: beat-into-submission ( -- )
-    begin
+0 [if]
+
+: search-for-sound ( -- )
+\    ['] discover-pins do-tree
+    8 0 do
+        i to sd#
+        ." stream " i . ." - "
         test-stream-output
-        close open
-        key? abort" keyboard interrupt"
-    submitted? until
+        ." channels: " 
+        8 0 do
+            i .
+            speaker-output to node
+            h# 70600 i or j 4 lshift or cmd drop
+            d# 200 ms
+        loop
+        reset-stream
+        cr
+    loop
 ;
+
+[then]
 
 [ifndef] hdaudio-loaded
 select /hdaudio
+[else]
+close open
 [then]
 
 create hdaudio-loaded
