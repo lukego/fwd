@@ -72,7 +72,7 @@ my-address my-space encode-phys
 
 \ Stream descriptor index. 
 0 value sd#
-: sd+ ( offset -- adr ) sd# h# 20 * + au + ;
+: sd+ ( offset -- adr ) sd# h# 20 * + au + 80 + ;
 
 : sdctl   h# 80 sd+ ;
 : sdsts   h# 83 sd+ ;
@@ -361,6 +361,8 @@ h# 02 value output
 
 [then]
 
+0 [if]
+
 : setup-connections ( -- )
     \ inputs
     7 to node
@@ -413,6 +415,54 @@ h# 02 value output
 
 : setup-widgets ( -- )
     setup-connections setup-volume \ setup-stream
+;
+
+[then]
+
+: setup-widgets
+   \ umute-in
+   7 to node 300 8 lshift 701d or cmd drop
+   18 to node 300 8 lshift 7003 or cmd drop
+   \ pin control
+   18 to node 707 8 lshift 24 or cmd drop
+   24 to node 701 8 lshift 0 or cmd drop
+   24 to node 300 8 lshift 7000 or cmd drop
+   24 to node 300 8 lshift b000 or cmd drop
+
+   \ connect
+   c to node 701 8 lshift 0 or cmd drop
+   \ unmute
+   c to node 300 8 lshift 7000 or cmd drop
+   c to node 300 8 lshift b000 or cmd drop
+   \ connect
+   14 to node 300 8 lshift 7000 or cmd drop
+   14 to node 300 8 lshift b000 or cmd drop
+   14 to node 300 8 lshift b000 or cmd drop
+
+   14 to node 707 8 lshift 40 or cmd drop
+   \ connect
+   c to node 701 8 lshift 0 or cmd drop
+   \ unmute
+   c to node 300 8 lshift 7000 or cmd drop
+   c to node 300 8 lshift b000 or cmd drop
+   \ connect
+   15 to node 701 8 lshift 0 or cmd drop
+   \ unmute
+   15 to node 300 8 lshift 7000 or cmd drop
+   15 to node 300 8 lshift b000 or cmd drop
+   15 to node 300 8 lshift b000 or cmd drop
+
+   15 to node 707 8 lshift c0 or cmd drop
+
+   \ connect
+   7 to node 701 8 lshift 0 or cmd drop
+
+   \ playback volume?
+   1 to node 705 8 lshift 0 or cmd drop
+
+   2 to node
+   70650 cmd drop \ stream / channel select
+   20011 cmd drop \ converter format
 ;
 
 \\\ Inspecting widgets
@@ -475,7 +525,7 @@ h# 02 value output
 
 : .node ( -- )
     do-tree-level spaces
-    codec .d ." / " node .d
+    codec . ." / " node .
     f0200 cmd lbsplit 4 0 do <# u# u# u#> type space loop 2 spaces
     widget-type case
         0   of ." audio output"   endof
@@ -486,7 +536,7 @@ h# 02 value output
         5   of ." power widget"   endof
         6   of ." volume knob"    endof
         7   of ." beep generator" endof
-        dup of exit               endof
+        dup of                    endof
     endcase
     cr  exit? abort" "
 ;
@@ -514,8 +564,8 @@ d# 256 /bd * value /bdl
 \ Sound buffers are allocated in contiguous memory.
 0 value buffers-virt
 0 value buffers-phys
-d# 4096 value /buffer
-      2 value #buffers
+h# 1000 value /buffer
+  h# 10 value #buffers
 /buffer #buffers * value /buffers
 
 : buffer-descriptor ( n -- adr ) /bd * bdl-virt + ;
@@ -554,17 +604,18 @@ d# 4096 value /buffer
 : init ( -- ) ;
 
 : open ( -- flag ) 
-    map-regs
-    reset
-    0 wakeen w!  0 statests w!
-    start
-    begin running? until
-    1 ms \ wait 250us for codecs to initialize
-    statests w@ 1 <> if
-        ." hdaudio: expected one codec but found this bitset: " statests w@ . cr
-    then
-    init-all
-    true
+   map-regs
+   reset
+   0 wakeen w!  0 statests w!
+   8 0 do  i to sd#  1c sdsts c!  loop
+   start
+   begin running? until
+   1 ms \ wait 250us for codecs to initialize
+   statests w@ 1 <> if
+      ." hdaudio: expected one codec but found this bitset: " statests w@ . cr
+   then
+   init-all
+   true
 ;
 
 : close ( -- )
@@ -589,7 +640,7 @@ d# 4096 value /buffer
     d# 96 +loop
 ;
 
-: test-stream-output ( -- )
+: real-test-stream-output ( -- )
     reset-stream
     init-square-wave
 \    h# 54 sdctl 2 + c!       \ channel 1, output - do this first
@@ -603,13 +654,40 @@ d# 4096 value /buffer
     0        sdbdpu !
 ;
 
+: test-stream-output ( -- )
+   0 18 sd+ ! \ laddr
+   0 1c sd+ ! \ uaddr
+   \ reset
+   0 0 sd+ c! 10 ms
+   1 0 sd+ c! 10 ms
+   0 0 sd+ c! 10 ms
+   540000 sdctl !
+   10000 8 sd+ ! \ buffer length
+   11 12 sd+ !   \ 4 channels (?)
+   f c sd+ w!    \ lvi
+   buffers-phys 18 sd+ !
+   0            1c sd+ !
+   \ SKIPPED dpl base
+   54001c 0 sd+ !  10 ms
+   2 to node
+   70650 cmd drop \ stream #
+   20011 cmd drop \ format
+   \ SKIPPED interrupt control
+   1e 0 sd+ c!
+   1c 3 sd+ c!
+
+   \ should be making noise
+   
+;   
+
 : blast-sound ( -- )
     4 to sd#
 \    ['] discover-pins do-tree
-    setup-widgets
+   init-square-wave
+   setup-widgets
     test-stream-output
-    setup-stream
-    start-stream
+\    setup-stream
+\    start-stream
 ;
 
 0 [if]
