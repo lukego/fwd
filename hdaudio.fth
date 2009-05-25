@@ -1,5 +1,7 @@
-\ Intel HD Audio driver (work in progress)
+\ Intel HD Audio driver (work in progress)  -*- forth -*-
 \ Copyright 2009 Luke Gorrie <luke@bup.co.nz>
+
+warning off
 
 \ Section and subsection comments - for Emacs
 : \\  postpone \ ; immediate
@@ -72,7 +74,8 @@ my-address my-space encode-phys
 
 \ Stream descriptor index. 
 0 value sd#
-: sd+ ( offset -- adr ) sd# h# 20 * + au + 80 + ;
+: sd+ ( offset -- adr ) sd# h# 20 * + au + ;
+: sd++ ( offset -- adr ) sd# h# 20 * + au + 80 + ;
 
 : sdctl   h# 80 sd+ ;
 : sdsts   h# 83 sd+ ;
@@ -298,7 +301,7 @@ param: 13 volume-caps
     h# 7f false gain/mute!
     70c02 cmd drop             \ external amp enable
     f07c0 cmd drop             \ pin widget output enable
-;
+ ;
 
 : init-speaker ( -- )
     node to speaker
@@ -309,7 +312,7 @@ param: 13 volume-caps
 
     init-output-pin
     speaker-output to node
-    h# 706.11 cmd drop         \ stream 1, channel 0
+    h# 706.51 cmd drop         \ stream 5, channel 0
     h# 200.10 cmd drop         \ format - 48khz 16-bit mono
 ;
 
@@ -328,8 +331,6 @@ param: 13 volume-caps
 
 \\\ Realtek ALC269 widget config
 
-0 [if]
-
 h# 15 value speaker \ headphone
 h# 0c value mixer
 h# 02 value output
@@ -337,133 +338,27 @@ h# 02 value output
 : setup-speaker ( -- )
     speaker to node
     h# f0100 cmd drop          \ select input 0
-    unmute
+    unmute-out
 \    70c02 cmd drop             \ external amp enable
     707c0 cmd drop             \ pin widget output enable
 ;
 
 : setup-mixer ( -- )
     mixer to node
-    
+
 \    h# 706.11 cmd drop         \ stream 1, channel 0
 \    h# 200.10 cmd drop         \ format - 48khz 16-bit mono
-    unmute
+    unmute-out
 ;
 
 : setup-output ( -- )
     output to node
-    h# 706.11 cmd drop         \ stream 1, channel 0
-    h# 200.10 cmd drop         \ format - 48khz 16-bit mono
-    unmute
+    h# 706.50 cmd drop         \ stream 1, channel 0
+    h# 200.11 cmd drop         \ format - 48khz 16-bit mono
+    unmute-out
 ;
 
 : setup-widgets ( -- ) setup-speaker setup-mixer setup-output ;
-
-[then]
-
-0 [if]
-
-: setup-connections ( -- )
-    \ inputs
-    7 to node
-    3701d cmd drop
-    37003 cmd drop
-    70724 cmd drop
-    24 to node
-    70100 cmd drop
-    37000 cmd drop
-    3b000 cmd drop
-
-    c to node
-    70100 cmd drop \ select connection #0
-    unmute-in
-    unmute-out
-    14 to node
-    70100 cmd drop
-    unmute-in
-    unmute-out
-    unmute-out
-    70740 cmd drop \ pin widget output enable
-    c to node
-    unmute-in
-    unmute-out
-    15 to node
-    70100 cmd drop \ select connection #0
-    unmute-in
-    unmute-out
-    unmute-out
-    707c0 cmd drop \ pin widget output enable, headphone enable
-    7 to node
-    70100 cmd drop \ connection #0
-    1 to node
-    70500 cmd drop \ function group power on
-;
-
-: setup-volume ( -- )
-    7 to node
-    3602f cmd drop \ volume
-    3502f cmd drop \ volume
-    2 to node  max-gain!
-    3 to node  max-gain!
-;
-
-: setup-stream ( -- )
-    2 to node
-    70650 cmd drop \ stream / channel select
-    20011 cmd drop \ converter format
-;
-
-: setup-widgets ( -- )
-    setup-connections setup-volume \ setup-stream
-;
-
-[then]
-
-: setup-widgets
-   \ umute-in
-   7 to node 300 8 lshift 701d or cmd drop
-   18 to node 300 8 lshift 7003 or cmd drop
-   \ pin control
-   18 to node 707 8 lshift 24 or cmd drop
-   24 to node 701 8 lshift 0 or cmd drop
-   24 to node 300 8 lshift 7000 or cmd drop
-   24 to node 300 8 lshift b000 or cmd drop
-
-   \ connect
-   c to node 701 8 lshift 0 or cmd drop
-   \ unmute
-   c to node 300 8 lshift 7000 or cmd drop
-   c to node 300 8 lshift b000 or cmd drop
-   \ connect
-   14 to node 300 8 lshift 7000 or cmd drop
-   14 to node 300 8 lshift b000 or cmd drop
-   14 to node 300 8 lshift b000 or cmd drop
-
-   14 to node 707 8 lshift 40 or cmd drop
-   \ connect
-   c to node 701 8 lshift 0 or cmd drop
-   \ unmute
-   c to node 300 8 lshift 7000 or cmd drop
-   c to node 300 8 lshift b000 or cmd drop
-   \ connect
-   15 to node 701 8 lshift 0 or cmd drop
-   \ unmute
-   15 to node 300 8 lshift 7000 or cmd drop
-   15 to node 300 8 lshift b000 or cmd drop
-   15 to node 300 8 lshift b000 or cmd drop
-
-   15 to node 707 8 lshift c0 or cmd drop
-
-   \ connect
-   7 to node 701 8 lshift 0 or cmd drop
-
-   \ playback volume?
-   1 to node 705 8 lshift 0 or cmd drop
-
-   2 to node
-   70650 cmd drop \ stream / channel select
-   20011 cmd drop \ converter format
-;
 
 \\\ Inspecting widgets
 
@@ -640,77 +535,30 @@ h# 1000 value /buffer
     d# 96 +loop
 ;
 
-: real-test-stream-output ( -- )
-    reset-stream
-    init-square-wave
-\    h# 54 sdctl 2 + c!       \ channel 1, output - do this first
-\    h# 00 sdctl 1 + c!
-    h# 1C sdctl 3 + c!       \ clear flags
-    h# 540000 sdctl !
-    /buffers sdcbl !         \ number of bytes in cyclic buffers
-    1 sdlvi c!               \ #1 is last valid entry
-    11 sdfmt !               \ 16-bit 48KHz stereo
-    bdl-phys sdbdpl !        \ install buffer descriptor list
-    0        sdbdpu !
-;
 
 : test-stream-output ( -- )
-   0 18 sd+ ! \ laddr
-   0 1c sd+ ! \ uaddr
-   \ reset
-   0 0 sd+ c! 10 ms
-   1 0 sd+ c! 10 ms
-   0 0 sd+ c! 10 ms
+   reset-stream
    540000 sdctl !
-   10000 8 sd+ ! \ buffer length
-   11 12 sd+ !   \ 4 channels (?)
-   f c sd+ w!    \ lvi
-   buffers-phys 18 sd+ !
-   0            1c sd+ !
-   \ SKIPPED dpl base
-   54001c 0 sd+ !  10 ms
-   2 to node
-   70650 cmd drop \ stream #
-   20011 cmd drop \ format
-   \ SKIPPED interrupt control
-   1e 0 sd+ c!
-   1c 3 sd+ c!
+   /buffers sdcbl ! \ buffer length
+   #buffers 1-  sdlvi w!
+   buffers-phys sdbdpl !
+   0            sdbdpu !
+;
 
-   \ should be making noise
-   
-;   
 
 : blast-sound ( -- )
     4 to sd#
 \    ['] discover-pins do-tree
    init-square-wave
-   setup-widgets
-    test-stream-output
+   15 to node 300 8 lshift b000 or cmd drop
+   15 to node 707 8 lshift c0 or cmd drop
+   test-stream-output
+   2 to node
+   70650 cmd drop \ stream #
+   20011 cmd drop \ format
 \    setup-stream
-\    start-stream
+    start-stream
 ;
-
-0 [if]
-
-: search-for-sound ( -- )
-\    ['] discover-pins do-tree
-    8 0 do
-        i to sd#
-        ." stream " i . ." - "
-        test-stream-output
-        ." channels: " 
-        8 0 do
-            i .
-            speaker-output to node
-            h# 70600 i or j 4 lshift or cmd drop
-            d# 200 ms
-        loop
-        reset-stream
-        cr
-    loop
-;
-
-[then]
 
 [ifndef] hdaudio-loaded
 select /hdaudio
