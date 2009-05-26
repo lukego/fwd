@@ -65,10 +65,12 @@ my-address my-space encode-phys
 : rirbctl   h# 5c au + ;
 : rirbsts   h# 5d au + ;
 : rirbsize  h# 5e au + ;
+: dplbase   h# 70 au + ;
+: dpubase   h# 74 au + ;
 
-: reset ( -- ) 0 gctl ! ;
-: start ( -- ) 1 gctl ! ;
-: running? ( -- ? ) gctl @ 1 and 0<> ;
+: running? ( -- ? ) gctl rl@ 1 and 0<> ;
+: reset ( -- ) 0 gctl rl!  begin running? 0= until ;
+: start ( -- ) 1 gctl rl!  begin running? until ;
 
 \\\ Stream Descriptors
 
@@ -92,11 +94,11 @@ my-address my-space encode-phys
 \ XXX The spec makes the immediate command registers optional and my
 \ EEE doesn't seem to support them.
 
-: command-ready? ( -- ? ) ics w@ 1 and 0= ;
-: response-ready? ( -- ? ) ics w@ 2 and 0<> ;
+: command-ready? ( -- ? ) ics rw@ 1 and 0= ;
+: response-ready? ( -- ? ) ics rw@ 2 and 0<> ;
 
-: write-command ( c -- ) begin command-ready? until  icw ! ;
-: read-response ( -- r ) begin response-ready? until  irr @ ;
+: write-command ( c -- ) begin command-ready? until  icw rl! ;
+: read-response ( -- r ) begin response-ready? until  irr rl@ ;
 
 : immediate-codec! ( chan nid verb -- )
     running? 0<> abort" hdaudio not running"
@@ -121,27 +123,27 @@ d# 1024 constant /corb
 0 value corb-phys
 0 value corb-pos
 
-: corb-dma-on  ( -- ) 2 corbctl c! ;
-: corb-dma-off ( -- ) 0 corbctl c!  begin corbctl c@  2 and 0= until ;
+: corb-dma-on  ( -- ) 2 corbctl rb! ;
+: corb-dma-off ( -- ) 0 corbctl rb!  begin corbctl rb@  2 and 0= until ;
 
 : init-corb ( -- )
     /corb dma-alloc  to corb-virt
     corb-virt /corb 0 fill
     corb-virt /corb true dma-map-in  to corb-phys
     corb-dma-off
-    corb-phys corblbase !
-    0 corbubase !
-    2 corbsize c!      \ 256 entries
-    corbrp w@ to corb-pos
+    corb-phys corblbase rl!
+    0 corbubase rl!
+    2 corbsize rb!      \ 256 entries
+    corbrp rw@ to corb-pos
     corb-dma-on
 ;
 
-: wait-for-corb-sync ( -- ) begin corbrp w@ corb-pos = until ;
+: wait-for-corb-sync ( -- ) begin corbrp rw@ corb-pos = until ;
 
 : corb-tx ( u -- )
     corb-pos 1+ d# 256 mod to corb-pos
     corb-pos cells corb-virt + ! ( )
-    corb-pos corbwp w!
+    corb-pos corbwp rw!
     wait-for-corb-sync
 ;
 
@@ -152,22 +154,22 @@ d# 256 2* cells constant /rirb
 0 value rirb-phys
 0 value rirb-pos
 
-: rirb-dma-off ( -- ) 0 rirbctl c! ;
-: rirb-dma-on  ( -- ) 2 rirbctl c! ;
+: rirb-dma-off ( -- ) 0 rirbctl rb! ;
+: rirb-dma-on  ( -- ) 2 rirbctl rb! ;
 
 : init-rirb ( -- )
     rirb-dma-off
-    rirb-virt /rirb 0 fill
     /rirb dma-alloc  to rirb-virt
+    rirb-virt /rirb 0 fill
     rirb-virt /corb true dma-map-in  to rirb-phys
-    rirb-phys rirblbase !
-    0 rirbubase !
-    2 rirbsize c! \ 256 entries
-    rirbwp w@ to rirb-pos
+    rirb-phys rirblbase rl!
+    0 rirbubase rl!
+    2 rirbsize rb! \ 256 entries
+    rirbwp rw@ to rirb-pos
     rirb-dma-on
 ;
 
-: rirb-data? ( -- ) rirb-pos rirbwp w@ <> ;
+: rirb-data? ( -- ) rirb-pos rirbwp rw@ <> ;
 
 : rirb-read ( -- resp solicited? )
     begin rirb-data?  key? abort" key interrupt" until
@@ -243,12 +245,13 @@ d# 256 2* cells constant /rirb
 
 \\ Streams
 \\\ Buffer Descriptor List
-
+ 
 struct ( buffer descriptor )
-    4 field >bd-uaddr
     4 field >bd-laddr
+    4 field >bd-uaddr
     4 field >bd-len
     4 field >bd-ioc
+\    d# 16 field >pad
 constant /bd
 
 0 value bdl-virt
@@ -257,7 +260,7 @@ d# 256 /bd * value /bdl
 
 : alloc-bdl ( -- )
     /bdl dma-alloc to bdl-virt
-    bdl-virt /bdl 0 fill
+    bdl-virt /bdl -1 lfill
     bdl-virt /bdl true dma-map-in to bdl-phys
 ;
 
@@ -265,40 +268,59 @@ d# 256 /bd * value /bdl
 \ Sound buffers are allocated in contiguous memory.
 0 value buffers-virt
 0 value buffers-phys
-h# 1000 value /buffer
-  h# 10 value #buffers
-/buffer #buffers * value /buffers
+h# 2000 value /buffer
+d# 256 value #buffers
+/buffer #buffers * constant /buffers
 
 : buffer-descriptor ( n -- adr ) /bd * bdl-virt + ;
+: buffer-virt ( n -- adr ) /buffer * buffers-virt + ;
+: buffer-phys ( n -- adr ) /buffer * buffers-phys + ;
 
 : alloc-sound-buffers ( -- )
-    /buffers dma-alloc to buffers-virt
-    buffers-virt /buffers true dma-map-in to buffers-phys
-    buffers-virt /buffers -1 fill
+   alloc-bdl
+   /buffers dma-alloc to buffers-virt
+   buffers-virt /buffers true dma-map-in to buffers-phys
+   buffers-virt /buffers -1 fill
 ;
 
 : init-sound-buffers ( -- )
-    buffers-virt 0= if alloc-sound-buffers then
-    #buffers 0 do
-        i buffer-phys  i buffer-descriptor >bd-laddr !
-        /buffer  i buffer-descriptor >bd-len !
-    loop
+   buffers-virt 0= if alloc-sound-buffers then
+   #buffers 0 do
+      i buffer-phys  i buffer-descriptor >bd-laddr !
+                  0  i buffer-descriptor >bd-uaddr !
+                  0  i buffer-descriptor >bd-ioc !
+      /buffer  i buffer-descriptor >bd-len !
+   loop
 ;
 
 \\\ Starting and stopping channels
 
-: assert-stream-reset   ( -- ) 1 sdctl c!  begin sdctl c@ 1 and 1 = until ;
-: deassert-stream-reset ( -- ) 0 sdctl c!  begin sdctl c@ 1 and 0 = until ;
+: assert-stream-reset   ( -- ) 1 sdctl rb!  begin sdctl rb@ 1 and 1 = until ;
+: deassert-stream-reset ( -- ) 0 sdctl rb!  begin sdctl rb@ 1 and 0 = until ;
 
 : reset-stream ( -- ) assert-stream-reset deassert-stream-reset ;
-: stop-stream  ( -- ) 0 sdctl c! begin sdctl c@ 2 and 0=  until ;
-: start-stream ( -- ) 2 sdctl c! begin sdctl c@ 2 and 0<> until ;
+: stop-stream  ( -- ) 0 sdctl rb! begin sdctl rb@ 2 and 0=  until ;
+: start-stream ( -- ) 2 sdctl rb! begin sdctl rb@ 2 and 0<> until ;
+
+\\ DMA position buffer
+
+0 value dma-pos-virt
+0 value dma-pos-phys
+d# 4096 value /dma-pos 
+
+: init-dma-pos-buffer ( -- )
+   /dma-pos dma-alloc to dma-pos-virt
+   dma-pos-virt /dma-pos true dma-map-in to dma-pos-phys
+   dma-pos-virt /dma-pos 0 fill
+   dma-pos-phys 1 or  dplbase rl!
+   0                  dpubase rl!
+;
 
 \\ Device open and close
 
 : reset-status-regs ( -- )
-   0 wakeen w!  0 statests w!
-   8 0 do  i to sd#  1c sdsts c!  loop
+   0 wakeen rw!  0 statests rw!
+   8 0 do  i to sd#  1c sdsts rb!  loop
 ;
 
 : init-all ( -- ) init-corb init-rirb init-sound-buffers ;
@@ -306,13 +328,15 @@ h# 1000 value /buffer
 : init ( -- ) ;
 
 : restart-controller ( -- )
-   reset start begin running? until
+   reset
+   init-dma-pos-buffer
+   start
    1 ms \ allow 250us for codecs to initialize
 ;
 
 : sanity-check ( -- )
-   statests w@ 1 <> if
-      ." hdaudio: expected one codec but found this bitset: " statests w@ . cr
+   statests rw@ 1 <> if
+      ." hdaudio: expected one codec but found this bitset: " statests rw@ . cr
    then
 ;
 
@@ -328,41 +352,96 @@ h# 1000 value /buffer
 
 \ Channel 0
 
-: random ( -- n ) counter @ ;
+2 constant /sample
+
+: random ( -- n ) counter rl@ ;
 
 : init-square-wave ( -- )
-    buffers-virt /buffers bounds do
+    buffers-virt /buffers d# 96 - bounds do
         i d# 48 bounds do
-            4000 i w!
-        2 +loop
-        i d# 48 bounds do
-            -4000 i d# 48 + w!
+           c00 i * /buffers / 2 *   i w!
+           -c00 i * /buffers / 2 * i d# 48 + w!
         2 +loop
     d# 96 +loop
 ;
 
-
 : test-stream-output ( -- )
    reset-stream
-   540000 sdctl !   \ stream 5
-   /buffers sdcbl ! \ buffer length
-   #buffers 1-  sdlvi w!
-   buffers-phys sdbdpl !
-   0            sdbdpu !
+   /buffers /sample / sdcbl rl! \ buffer length
+\   /buffer  sdcbl rl! \ buffer length
+   440000 sdctl rl!   \ stream 4
+\   1 sdlvi rw!
+   #buffers 2 / 1 -  sdlvi rw!
+\   #buffers 1 -  sdlvi rw!
+   bdl-phys     sdbdpl rl!
+   0            sdbdpu rl!
+   0011 sdfmt rw! \ 16-bit 
 ;
-
 
 : blast-sound ( -- )
    4 to sd#
    init-square-wave
+\   buffers-virt /buffers 0 fill
    init-widgets
    test-stream-output
    2 to node
-   70650 cmd drop \ stream #
+   70640 cmd drop \ stream #
    20011 cmd drop \ format
    start-stream
+   3b024 cmd drop \ volume (low)
 ;
 
+: quiet ( -- )
+   15 to node  3b080 cmd drop
+;
+
+: dma-positions ( -- )
+   dma-pos-virt /dma-pos dump
+;
+
+\ sweep
+
+0 value sweep
+0 value /sweep
+
+: load-sweep ( -- )
+   " sweep" find-drop-in  0= abort" can't find sweep drop-in"
+   to /sweep to sweep
+;
+
+: copy-sweep ( -- )
+   sweep 0= if  load-sweep  then
+   sweep buffers-virt /sweep move
+;
+
+: sweep-stream-output ( -- )
+   reset-stream
+   /sweep sdcbl rl! \ buffer length
+\   /buffer  sdcbl rl! \ buffer length
+   440000 sdctl rl!   \ stream 4
+\   1 sdlvi rw!
+   #buffers 1 -  sdlvi rw!
+\   #buffers 1 -  sdlvi rw!
+   bdl-phys     sdbdpl rl!
+   0            sdbdpu rl!
+   0011 sdfmt rw! \ 16-bit 
+;
+
+: play-sweep ( -- )
+   4 to sd#
+   copy-sweep
+   init-widgets
+   copy-sweep
+   sweep-stream-output
+   copy-sweep
+   2 to node
+   70640 cmd drop \ stream #
+   20011 cmd drop \ format
+   copy-sweep
+   start-stream
+   copy-sweep
+   3b024 cmd drop \ volume (low)
+;   
 
 [ifndef] hdaudio-loaded
 select /hdaudio
