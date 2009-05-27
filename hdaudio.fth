@@ -1,3 +1,4 @@
+dl
 \ Intel HD Audio driver (work in progress)  -*- forth -*-
 \ Copyright 2009 Luke Gorrie <luke@bup.co.nz>
 
@@ -12,7 +13,8 @@ warning off
 ." loading hdaudio" cr
 
 [ifndef] hdaudio-loaded
- dev /pci8086,2668
+\ dev /pci8086,2668
+ dev /pci/pci1106,3288@14
  extend-package
  " hdaudio" name
   0 value au
@@ -119,7 +121,7 @@ my-address my-space encode-phys
 \\\ CORB - Command Output Ring Buffer
 
 d# 1024 constant /corb
-0 value corb-virt
+0 value corb
 0 value corb-phys
 0 value corb-pos
 
@@ -127,9 +129,9 @@ d# 1024 constant /corb
 : corb-dma-off ( -- ) 0 corbctl rb!  begin corbctl rb@  2 and 0= until ;
 
 : init-corb ( -- )
-    /corb dma-alloc  to corb-virt
-    corb-virt /corb 0 fill
-    corb-virt /corb true dma-map-in  to corb-phys
+    /corb dma-alloc  to corb
+    corb /corb 0 fill
+    corb /corb true dma-map-in  to corb-phys
     corb-dma-off
     corb-phys corblbase rl!
     0 corbubase rl!
@@ -142,7 +144,7 @@ d# 1024 constant /corb
 
 : corb-tx ( u -- )
     corb-pos 1+ d# 256 mod to corb-pos
-    corb-pos cells corb-virt + ! ( )
+    corb-pos cells corb + ! ( )
     corb-pos corbwp rw!
     wait-for-corb-sync
 ;
@@ -150,7 +152,7 @@ d# 1024 constant /corb
 \\\ RIRB - Response Inbound Ring Buffer
 
 d# 256 2* cells constant /rirb
-0 value rirb-virt
+0 value rirb
 0 value rirb-phys
 0 value rirb-pos
 
@@ -159,9 +161,9 @@ d# 256 2* cells constant /rirb
 
 : init-rirb ( -- )
     rirb-dma-off
-    /rirb dma-alloc  to rirb-virt
-    rirb-virt /rirb 0 fill
-    rirb-virt /corb true dma-map-in  to rirb-phys
+    /rirb dma-alloc  to rirb
+    rirb /rirb 0 fill
+    rirb /corb true dma-map-in  to rirb-phys
     rirb-phys rirblbase rl!
     0 rirbubase rl!
     2 rirbsize rb! \ 256 entries
@@ -174,7 +176,7 @@ d# 256 2* cells constant /rirb
 : rirb-read ( -- resp solicited? )
     begin rirb-data?  key? abort" key interrupt" until
     rirb-pos 1+ d# 256 mod to rirb-pos
-    rirb-pos 2 * cells rirb-virt + ( adr )
+    rirb-pos 2 * cells rirb +      ( adr )
     dup @                          ( adr resp )
     swap cell+ @                   ( resp resp-ex )
     h# 10 and 0=                   ( resp? solicited? )
@@ -254,44 +256,48 @@ struct ( buffer descriptor )
 \    d# 16 field >pad
 constant /bd
 
-0 value bdl-virt
+0 value bdl
 0 value bdl-phys
 d# 256 /bd * value /bdl
 
 : alloc-bdl ( -- )
-    /bdl dma-alloc to bdl-virt
-    bdl-virt /bdl -1 lfill
-    bdl-virt /bdl true dma-map-in to bdl-phys
+    /bdl dma-alloc to bdl
+    bdl /bdl 0 fill
+    bdl /bdl true dma-map-in to bdl-phys
 ;
 
 \\\ Sound buffers
 \ Sound buffers are allocated in contiguous memory.
-0 value buffers-virt
+0 value buffers
 0 value buffers-phys
-h# 2000 value /buffer
-d# 256 value #buffers
-/buffer #buffers * constant /buffers
+h# 100000 constant /buffers
 
-: buffer-descriptor ( n -- adr ) /bd * bdl-virt + ;
-: buffer-virt ( n -- adr ) /buffer * buffers-virt + ;
-: buffer-phys ( n -- adr ) /buffer * buffers-phys + ;
+: buffer-descriptor ( n -- adr ) /bd * bdl + ;
+\ : buffer ( n -- adr ) /buffer * buffers + ;
+\ : buffer-phys ( n -- adr ) /buffer * buffers-phys + ;
 
 : alloc-sound-buffers ( -- )
    alloc-bdl
-   /buffers dma-alloc to buffers-virt
-   buffers-virt /buffers true dma-map-in to buffers-phys
-   buffers-virt /buffers -1 fill
+   /buffers dma-alloc to buffers
+   buffers /buffers true dma-map-in to buffers-phys
+   buffers /buffers -1 fill
 ;
 
 : init-sound-buffers ( -- )
-   buffers-virt 0= if alloc-sound-buffers then
-   #buffers 0 do
-      i buffer-phys  i buffer-descriptor >bd-laddr !
-                  0  i buffer-descriptor >bd-uaddr !
-                  0  i buffer-descriptor >bd-ioc !
-      /buffer  i buffer-descriptor >bd-len !
-   loop
-;
+   buffers 0= if alloc-sound-buffers then
+   \ first descriptor is whole buffer
+   buffers-phys 0 buffer-descriptor >bd-laddr !
+   0            0 buffer-descriptor >bd-uaddr !
+   0            0 buffer-descriptor >bd-len !
+   0            0 buffer-descriptor >bd-ioc !
+   \ second descriptor is 'dummy' - one word
+   buffers-phys 0 buffer-descriptor >bd-laddr !
+   0            0 buffer-descriptor >bd-uaddr !
+   4            0 buffer-descriptor >bd-len !
+   0            0 buffer-descriptor >bd-ioc !
+;   
+
+: sound-len! ( u -- ) 0 buffer-descriptor >bd-len ! ;
 
 \\\ Starting and stopping channels
 
@@ -304,19 +310,20 @@ d# 256 value #buffers
 
 \\ DMA position buffer
 
-0 value dma-pos-virt
+0 value dma-pos
 0 value dma-pos-phys
 d# 4096 value /dma-pos 
 
 : init-dma-pos-buffer ( -- )
-   /dma-pos dma-alloc to dma-pos-virt
-   dma-pos-virt /dma-pos true dma-map-in to dma-pos-phys
-   dma-pos-virt /dma-pos 0 fill
+   /dma-pos dma-alloc to dma-pos
+   dma-pos /dma-pos true dma-map-in to dma-pos-phys
+   dma-pos /dma-pos 0 fill
    dma-pos-phys 1 or  dplbase rl!
    0                  dpubase rl!
 ;
 
-\\ Device open and close
+\\ Module interface
+\\\ Device open and close
 
 : reset-status-regs ( -- )
    0 wakeen rw!  0 statests rw!
@@ -348,6 +355,34 @@ d# 4096 value /dma-pos
     reset  unmap-regs
 ;
 
+\\\ Audio API
+
+2 value amp
+
+: gain/mute! ( gain mute? -- )
+    if h# 80 or then  ( gain/mute )
+    h# 3f000 or       \ set output, input, left, right
+    cmd
+;
+
+: unmute-in  ( -- ) h# 37000 cmd drop ;
+: unmute-out ( -- ) h# 3b000 cmd drop ;
+
+: amp-caps ( -- u ) f0012 cmd ;
+
+: gain-steps ( -- n ) amp-caps  8 rshift 7f and  1+ ;
+: step-size  ( -- n ) amp-caps  d# 16 rshift  7f and  1+ ;
+: 0dB-step   ( -- n ) amp-caps  7f and ;
+
+: steps/dB ( -- #steps ) step-size 4 * ;
+
+: dB>steps ( dB -- #steps ) 4 *  step-size / ;
+
+: set-volume ( dB -- )
+   amp to node
+   dB>steps  0dB-step +  false gain/mute!
+;
+
 \\ Testing
 
 \ Channel 0
@@ -357,7 +392,7 @@ d# 4096 value /dma-pos
 : random ( -- n ) counter rl@ ;
 
 : init-square-wave ( -- )
-    buffers-virt /buffers d# 96 - bounds do
+    buffers /buffers d# 96 - bounds do
         i d# 48 bounds do
            c00 i * /buffers / 2 *   i w!
            -c00 i * /buffers / 2 * i d# 48 + w!
@@ -367,11 +402,11 @@ d# 4096 value /dma-pos
 
 : test-stream-output ( -- )
    reset-stream
-   /buffers /sample / sdcbl rl! \ buffer length
-\   /buffer  sdcbl rl! \ buffer length
+   /buffers sound-len!
+   /buffers sdcbl rl! \ buffer length
    440000 sdctl rl!   \ stream 4
-\   1 sdlvi rw!
-   #buffers 2 / 1 -  sdlvi rw!
+   1 sdlvi rw!
+\   #buffers 2 / 1 -  sdlvi rw!
 \   #buffers 1 -  sdlvi rw!
    bdl-phys     sdbdpl rl!
    0            sdbdpu rl!
@@ -381,10 +416,9 @@ d# 4096 value /dma-pos
 : blast-sound ( -- )
    4 to sd#
    init-square-wave
-\   buffers-virt /buffers 0 fill
    init-widgets
    test-stream-output
-   2 to node
+   10 to node
    70640 cmd drop \ stream #
    20011 cmd drop \ format
    start-stream
@@ -396,7 +430,7 @@ d# 4096 value /dma-pos
 ;
 
 : dma-positions ( -- )
-   dma-pos-virt /dma-pos dump
+   dma-pos /dma-pos dump
 ;
 
 \ sweep
@@ -411,16 +445,16 @@ d# 4096 value /dma-pos
 
 : copy-sweep ( -- )
    sweep 0= if  load-sweep  then
-   sweep buffers-virt /sweep move
+   sweep buffers /sweep move
 ;
 
 : sweep-stream-output ( -- )
    reset-stream
+   /sweep sound-len!
    /sweep sdcbl rl! \ buffer length
-\   /buffer  sdcbl rl! \ buffer length
    440000 sdctl rl!   \ stream 4
-\   1 sdlvi rw!
-   #buffers 1 -  sdlvi rw!
+   1 sdlvi rw!
+\   #buffers 1 -  sdlvi rw!
 \   #buffers 1 -  sdlvi rw!
    bdl-phys     sdbdpl rl!
    0            sdbdpu rl!
@@ -434,7 +468,7 @@ d# 4096 value /dma-pos
    copy-sweep
    sweep-stream-output
    copy-sweep
-   2 to node
+   10 to node
    70640 cmd drop \ stream #
    20011 cmd drop \ format
    copy-sweep
@@ -451,3 +485,140 @@ close open
 
 create hdaudio-loaded
 
+
+
+
+
+\ The use of CREATE DOES here is probably gratuitious. But how will I
+\ learn if I never use it? -luke
+
+: param@ ( n -- u ) f0000 or cmd ;
+
+: get-hex# ( "number" -- n )
+    safe-parse-word  push-hex  $number abort" bad hex#"  pop-base
+;
+
+: param: ( "name" "id" -- value )
+    get-hex# create ,
+    does> @ param@
+;
+
+param: 00 vendor-id
+param: 02 revision-id
+param: 04 subnodes
+param: 05 function-type
+param: 08 function-caps
+param: 09 widget-caps
+param: 0a pcm-support
+param: 0b stream-formats
+param: 0c pin-caps
+\ param: 0d amp-caps
+param: 0e connections
+param: 0f power-states
+param: 10 processing-caps
+param: 11 gpio-count
+param: 13 volume-caps
+
+
+: connection0 ( -- n ) f0200 cmd ( connection-list ) ff and ;
+: config-default ( -- c ) f1c00 cmd ;
+: connection-select ( -- n ) f0100 cmd ;
+: default-device ( -- d ) config-default d# 20 rshift  f and ;
+: location       ( -- l ) config-default d# 24 rshift 3f and ;
+: color          ( -- c ) config-default d# 12 rshift  f and ;
+: connectivity   ( -- c ) config-default d# 30 rshift ;
+
+: gain/mute ( output? left? -- gain mute? )
+    0 swap if h# 2000 or then
+    swap   if h# 8000 or then
+    h# b0000 or  cmd
+    dup h# 7f and      ( res gain )
+    swap h# 80 and 0<> ( gain mute? )
+;
+
+\\\ Inspecting widgets
+
+: .connectivity ( -- )
+    case connectivity
+        0 of ." external " endof
+        1 of ." unused " endof
+        2 of ." builtin " endof
+        3 of ." builtin/external " endof
+    endcase
+;
+
+: .color ( -- )
+    case color
+        1 of ." black " endof
+        2 of ." grey " endof
+        3 of ." blue " endof
+        4 of ." green " endof
+        5 of ." red " endof
+        6 of ." orange " endof
+        7 of ." yellow " endof
+        8 of ." purple " endof
+        9 of ." pink " endof
+        e of ." white " endof
+    endcase
+;
+
+: .location ( -- )
+    case location
+        1 of ." rear " endof
+        2 of ." front " endof
+        3 of ." left " endof
+        4 of ." right " endof
+        5 of ." top " endof
+        6 of ." bottom " endof
+        7 of ." special " endof
+    endcase
+;    
+
+: .default-device ( -- )
+    case default-device
+        0 of ." line out)" endof
+        1 of ." speaker)"  endof
+        2 of ." HP out)"   endof
+        3 of ." CD)"       endof
+        4 of ." SPDIF out)" endof
+        5 of ." digital other out)" endof
+        6 of ." modem line side)" endof
+        7 of ." modem handset side)" endof
+        8 of ." line in)" endof
+        9 of ." aux)" endof
+        a of ." mic in)" endof
+        b of ." telephony)" endof
+        c of ." SPDIF in)" endof
+        d of ." digital other in)" endof
+        dup of ." unknown)" endof
+    endcase
+;
+
+: .node ( -- )
+    do-tree-level spaces
+    codec . ." / " node .
+    f0200 cmd lbsplit 4 0 do <# u# u# u#> type space loop 2 spaces
+    widget-type case
+        0   of ." audio output"   endof
+        1   of ." audio input"    endof
+        2   of ." audio mixer"    endof
+        3   of ." audio selector" endof
+        4   of ." pin widget (" .connectivity .color .location .default-device endof
+        5   of ." power widget"   endof
+        6   of ." volume knob"    endof
+        7   of ." beep generator" endof
+        dup of                    endof
+    endcase
+    cr  exit? abort" "
+;
+
+." loaded" cr
+
+
+: via-hack ( -- )
+    2 to node  70500 cmd drop
+   11 to node  70500 cmd drop
+   19 to node  70500 cmd drop
+;
+
+
