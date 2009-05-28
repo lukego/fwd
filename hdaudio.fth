@@ -1,7 +1,7 @@
 \ Intel HD Audio driver (work in progress)  -*- forth -*-
 \ Copyright 2009 Luke Gorrie <luke@bup.co.nz>
 
-\ warning off
+warning off
 
 \ Section and subsection comments - for Emacs
 : \\  postpone \ ; immediate
@@ -41,6 +41,7 @@ my-address my-space encode-phys
 ;
 
 : dma-alloc   ( len -- adr ) " dma-alloc" $call-parent ;
+: dma-free    ( adr size -- )  " dma-free" $call-parent  ;
 : dma-map-in  ( adr len flag -- adr ) " dma-map-in" $call-parent ;
 : dma-map-out ( adr len -- ) " dma-map-out" $call-parent ;
 
@@ -74,9 +75,36 @@ my-address my-space encode-phys
 : start ( -- ) 1 gctl rl!  begin running? until ;
 
 \\\ Stream Descriptors
+\ Default: 48kHz 16bit stereo
+0 value sample-base
+0 value sample-mul
+0 value sample-div
+1 value sample-format
+2 value #channels
+
+: stream-format ( -- u )
+   sample-base    d# 14 lshift     ( acc )
+   sample-mul     d# 11 lshift  or ( acc )
+   sample-div     d#  8 lshift  or ( acc )
+   sample-format      4 lshift  or ( acc )
+   #channels 1-                 or ( fmt )
+;
+
+: sample-rate! ( base mul div ) to sample-div to sample-mul to sample-base ;
+
+:   48kHz ( -- ) 0 0 0 sample-rate! ;
+: 44.1kHz ( -- ) 1 0 0 sample-rate! ;
+:   96kHz ( -- ) 0 1 0 sample-rate! ;
+:  192kHz ( -- ) 0 3 0 sample-rate! ;
+
+:  8bit ( -- ) 0 to sample-format ;
+: 16bit ( -- ) 1 to sample-format ;
+: 20bit ( -- ) 2 to sample-format ;
+: 24bit ( -- ) 3 to sample-format ;
+: 32bit ( -- ) 4 to sample-format ;
 
 \ Stream descriptor index. 
-0 value sd#
+4 constant sd#
 : sd+ ( offset -- adr ) sd# h# 20 * + au + ;
 : sd++ ( offset -- adr ) sd# h# 20 * + au + 80 + ;
 
@@ -235,10 +263,13 @@ d# 256 2* cells constant /rirb
 
 \\\ Find and setup the interesting widgets
 
+0 value amp
+
 : setup-widget ( -- )
    pin-widget? headphone? and if
       3b000 cmd drop \ unmute
       707c0 cmd drop \ pin widget: enable output, headphones
+\      connection0 to amp
    then
 ;
 
@@ -252,7 +283,6 @@ struct ( buffer descriptor )
     4 field >bd-uaddr
     4 field >bd-len
     4 field >bd-ioc
-\    d# 16 field >pad
 constant /bd
 
 0 value bdl
@@ -267,34 +297,14 @@ d# 256 /bd * value /bdl
 
 \\\ Sound buffers
 \ Sound buffers are allocated in contiguous memory.
-0 value buffers
-0 value buffers-phys
-h# 80000 constant /buffers
 
 : buffer-descriptor ( n -- adr ) /bd * bdl + ;
 \ : buffer ( n -- adr ) /buffer * buffers + ;
 \ : buffer-phys ( n -- adr ) /buffer * buffers-phys + ;
 
-: alloc-sound-buffers ( -- )
-   alloc-bdl
-   /buffers dma-alloc to buffers
-   buffers /buffers true dma-map-in to buffers-phys
-   buffers /buffers -1 fill
-;
-
 : init-sound-buffers ( -- )
-   buffers 0= if alloc-sound-buffers then
-   \ first descriptor is whole buffer
-   buffers-phys 0 buffer-descriptor >bd-laddr !
-   0            0 buffer-descriptor >bd-uaddr !
-   0            0 buffer-descriptor >bd-len !
-   0            0 buffer-descriptor >bd-ioc !
-   \ second descriptor is 'dummy' - one word
-   buffers-phys 0 buffer-descriptor >bd-laddr !
-   0            0 buffer-descriptor >bd-uaddr !
-   4            0 buffer-descriptor >bd-len !
-   0            0 buffer-descriptor >bd-ioc !
-;   
+   alloc-bdl
+;
 
 : sound-len! ( u -- ) 0 buffer-descriptor >bd-len ! ;
 
@@ -329,13 +339,45 @@ d# 4096 value /dma-pos
    8 0 do  i to sd#  1c sdsts rb!  loop
 ;
 
-: via-hack ( -- )
-    2 to node  70500 cmd drop
-   11 to node  70500 cmd drop
-   19 to node  70500 cmd drop
+: via-extra ( -- )
+   01 to node 705 8 lshift 0 or  cmd drop \ set power state
+   10 to node 705 8 lshift 0 or  cmd drop \ ...
+   11 to node 705 8 lshift 0 or  cmd drop 
+   12 to node 705 8 lshift 0 or  cmd drop 
+   14 to node 705 8 lshift 0 or  cmd drop 
+   15 to node 705 8 lshift 0 or  cmd drop 
+   16 to node 705 8 lshift 0 or  cmd drop 
+   17 to node 705 8 lshift 0 or  cmd drop 
+   18 to node 705 8 lshift 0 or  cmd drop 
+   19 to node 705 8 lshift 0 or  cmd drop 
+   1a to node 705 8 lshift 0 or  cmd drop 
+   1b to node 705 8 lshift 0 or  cmd drop 
+   1c to node 705 8 lshift 0 or  cmd drop 
+   1d to node 705 8 lshift 0 or  cmd drop 
+   1e to node 705 8 lshift 0 or  cmd drop 
+   1f to node 705 8 lshift 0 or  cmd drop 
+   20 to node 705 8 lshift 0 or  cmd drop 
+   21 to node 705 8 lshift 0 or  cmd drop 
+   22 to node 705 8 lshift 0 or  cmd drop 
+   23 to node 705 8 lshift 0 or  cmd drop 
+   24 to node 705 8 lshift 0 or  cmd drop 
+   14 to node 300 8 lshift 6006 or  cmd drop \ set volume
+   14 to node 300 8 lshift 5006 or  cmd drop \ ...
+   23 to node 300 8 lshift 6004 or  cmd drop 
+   23 to node 300 8 lshift 5004 or  cmd drop 
+   17 to node 300 8 lshift a004 or  cmd drop 
+   17 to node 300 8 lshift 9004 or  cmd drop 
+   18 to node 300 8 lshift a004 or  cmd drop 
+   18 to node 300 8 lshift 9004 or  cmd drop 
+   14 to node 300 8 lshift 6200 or  cmd drop 
+   14 to node 300 8 lshift 5200 or  cmd drop 
+   10 to node 300 8 lshift a03e or  cmd drop 
+   10 to node 300 8 lshift 903e or  cmd drop 
+   10 to node 706 8 lshift 40 or  cmd drop   \ converter stream (4)
+   10 to node 200 8 lshift 11 or  cmd drop   \ converter format
 ;
 
-: init-all ( -- ) init-corb init-rirb init-sound-buffers via-hack ;
+: init-all ( -- ) init-corb init-rirb init-sound-buffers via-extra ;
 
 : init ( -- ) ;
 
@@ -362,8 +404,6 @@ d# 4096 value /dma-pos
 
 \\\ Audio API
 
-2 value amp
-
 : gain/mute! ( gain mute? -- )
     if h# 80 or then  ( gain/mute )
     h# 3f000 or       \ set output, input, left, right
@@ -385,188 +425,118 @@ d# 4096 value /dma-pos
 
 : set-volume ( dB -- )
    amp to node
-   dB>steps  0dB-step +  false gain/mute!
+\   dB>steps  0dB-step +  false gain/mute!
+;
+
+: set-sample-rate ( kHz -- )
+   ." set sample rate: " dup .d cr
+   d# 48 / case \ find nearest supported rate
+         0 of 44.1kHz endof
+         1 of   48kHz endof
+         2 of   96kHz endof
+         3 of   96kHz endof
+       dup of  192kHz endof
+   endcase
+;
+
+\ make noise
+
+0 value sound-buffer
+0 value sound-buffer-phys
+0 value /sound-buffer
+
+\ filled with zeros and put at the end of the stream, to avoid instant loopback
+0 value pad-buffer
+0 value pad-buffer-phys
+d# 2048 value /pad-buffer
+
+: alloc-pad-buffer ( -- )
+   /pad-buffer dma-alloc to pad-buffer
+   pad-buffer /pad-buffer true dma-map-in to pad-buffer-phys
+   pad-buffer /pad-buffer 0 fill
+;
+
+: free-pad-buffer ( -- )
+   pad-buffer pad-buffer-phys /pad-buffer dma-map-out
+   pad-buffer /pad-buffer dma-free
+;
+
+: setup-sound-buffer ( adr len -- )
+   to /sound-buffer to sound-buffer
+   sound-buffer /sound-buffer true dma-map-in to sound-buffer-phys
+;
+
+: setup-bdl ( -- )
+   sound-buffer-phys  0 buffer-descriptor >bd-laddr !
+                   0  0 buffer-descriptor >bd-uaddr !
+       /sound-buffer  0 buffer-descriptor >bd-len   !
+                   1  0 buffer-descriptor >bd-ioc   !
+
+     pad-buffer-phys  1 buffer-descriptor >bd-laddr !
+                   0  1 buffer-descriptor >bd-uaddr !
+         /pad-buffer  1 buffer-descriptor >bd-len   !
+                   0  1 buffer-descriptor >bd-ioc   !
+;
+
+: play-stream ( -- )
+\   5 to sample-div
+   48kHz
+   reset-stream
+   /sound-buffer /pad-buffer + sdcbl rl! \ buffer length
+   440000 sdctl rl!        \ stream 4
+   1 sdlvi rw!             \ two buffers
+   1c sdsts c!             \ clear status flags
+   bdl-phys sdbdpl rl!
+          0 sdbdpu rl!
+   stream-format
+
+ sdfmt rw! \ 16-bit stereo
+   
+   \ FIXME
+   10 to node  20000 stream-format or cmd  drop
+;
+
+: stream-done?     ( -- ) sdsts c@ 4 and 0<> ;
+: wait-stream-done ( -- ) begin stream-done? until ;
+
+: write ( adr len -- actual )
+   alloc-pad-buffer        ( )
+   setup-sound-buffer      ( )
+   setup-bdl               ( )
+   play-stream             ( )
+   start-stream            ( )
+;
+
+: release-sound-buffer ( -- )
+   sound-buffer sound-buffer-phys /sound-buffer dma-map-out
+;
+
+: write-done ( -- )
+   wait-stream-done
+   stop-stream
+   release-sound-buffer   
+   free-pad-buffer
 ;
 
 \\ Testing
 
-\ Channel 0
-
-2 constant /sample
-
-: random ( -- n ) counter rl@ ;
+d# 512 d# 1024 * constant /square-wave
+create square-wave  /square-wave allot
 
 : init-square-wave ( -- )
-    buffers /buffers d# 96 - bounds do
-        i d# 48 bounds do
-           c00 i * /buffers / 2 *   i w!
-           -c00 i * /buffers / 2 * i d# 48 + w!
-        2 +loop
-    d# 96 +loop
+   square-wave /square-wave d# 96 - bounds do
+      i d# 48 bounds do
+         c00 i * /square-wave / 2 *   i w!
+         -c00 i * /square-wave / 2 * i d# 48 + w!
+      2 +loop
+   d# 96 +loop
 ;
 
-: test-stream-output ( -- )
-   reset-stream
-   /buffers sound-len!
-   /buffers sdcbl rl! \ buffer length
-   440000 sdctl rl!   \ stream 4
-   1 sdlvi rw!
-\   #buffers 2 / 1 -  sdlvi rw!
-\   #buffers 1 -  sdlvi rw!
-   bdl-phys     sdbdpl rl!
-   0            sdbdpu rl!
-   0011 sdfmt rw! \ 16-bit 
+: play-square-wave ( -- )
+   init-square-wave  square-wave /square-wave write  write-done
 ;
 
-: via-extra ( -- )
-[ifdef] oinkoink
-   01 to node 705 8 lshift 0 or  cmd drop \ set power state
-   10 to node 705 8 lshift 0 or  cmd drop \ ...
-   11 to node 705 8 lshift 0 or  cmd drop 
-   12 to node 705 8 lshift 0 or  cmd drop 
-   14 to node 705 8 lshift 0 or  cmd drop 
-   15 to node 705 8 lshift 0 or  cmd drop 
-   16 to node 705 8 lshift 0 or  cmd drop 
-   17 to node 705 8 lshift 0 or  cmd drop 
-   18 to node 705 8 lshift 0 or  cmd drop 
-   19 to node 705 8 lshift 0 or  cmd drop 
-   1a to node 705 8 lshift 0 or  cmd drop 
-   1b to node 705 8 lshift 0 or  cmd drop 
-   1c to node 705 8 lshift 0 or  cmd drop 
-   1d to node 705 8 lshift 0 or  cmd drop 
-   1e to node 705 8 lshift 0 or  cmd drop 
-   1f to node 705 8 lshift 0 or  cmd drop 
-   20 to node 705 8 lshift 0 or  cmd drop 
-   21 to node 705 8 lshift 0 or  cmd drop 
-   22 to node 705 8 lshift 0 or  cmd drop 
-   23 to node 705 8 lshift 0 or  cmd drop 
-   24 to node 705 8 lshift 0 or  cmd drop 
-[then]
-   14 to node 300 8 lshift 6006 or  cmd drop \ set volume
-   14 to node 300 8 lshift 5006 or  cmd drop \ ...
-   23 to node 300 8 lshift 6004 or  cmd drop 
-   23 to node 300 8 lshift 5004 or  cmd drop 
-   17 to node 300 8 lshift a004 or  cmd drop 
-   17 to node 300 8 lshift 9004 or  cmd drop 
-   18 to node 300 8 lshift a004 or  cmd drop 
-   18 to node 300 8 lshift 9004 or  cmd drop 
-   14 to node 300 8 lshift 6200 or  cmd drop 
-   14 to node 300 8 lshift 5200 or  cmd drop 
-   10 to node 300 8 lshift a03e or  cmd drop 
-   10 to node 300 8 lshift 903e or  cmd drop 
-   10 to node 706 8 lshift 40 or  cmd drop   \ converter stream (4)
-   10 to node 200 8 lshift 11 or  cmd drop   \ converter format
-[ifdef] oinkoink
-   7  to node 300 8 lshift 701d or cmd  drop \ get connection list
-   18 to node 300 8 lshift 7003 or cmd  drop \ volume = 3
-   18 to node 707 8 lshift 24 or   cmd  drop \ pin control
-   24 to node 701 8 lshift 0 or    cmd  drop \ set connection
-   24 to node 300 8 lshift 7000 or cmd  drop \ set volume
-   24 to node 300 8 lshift b000 or cmd  drop \ set volume
-   c  to node 701 8 lshift 0 or    cmd  drop \ set connection
-   c  to node 300 8 lshift 7000 or cmd  drop \ set volume
-   c  to node 300 8 lshift b000 or cmd  drop \ set volume
-   14 to node 701 8 lshift 0 or    cmd  drop \ set connection
-   14 to node 300 8 lshift 7000 or cmd  drop \ set volume
-   14 to node 300 8 lshift b000 or cmd  drop \ set volume
-   14 to node 300 8 lshift b000 or cmd  drop \ set volume
-   14 to node 707 8 lshift 40 or   cmd  drop \ pin control
-   c  to node 701 8 lshift 0 or    cmd  drop \ set connection
-   c  to node 300 8 lshift 7000 or cmd  drop \ set volume
-   c  to node 300 8 lshift b000 or cmd  drop \ set volume
-\[then]
-   15 to node 701 8 lshift 0 or    cmd  drop \ set connection
-   15 to node 300 8 lshift 7000 or cmd  drop \ set volume
-   15 to node 300 8 lshift b000 or cmd  drop \ set volume
-   15 to node 300 8 lshift b000 or cmd  drop \ set volume
-   15 to node 707 8 lshift c0 or   cmd  drop \ pin control
-\[ifdef] oinkoink
-   7  to node 701 8 lshift 0 or    cmd  drop \ set connection
-\[then]
-   1  to node 705 8 lshift 0 or    cmd  drop \ set power state
-   2  to node 706 8 lshift 40 or   cmd  drop \ converter stream (4)
-   2  to node 200 8 lshift 11 or   cmd  drop \ converter format
-\   2  to node 706 8 lshift 0 or    cmd  drop \ converter stream
-\   2  to node 200 8 lshift 0 or    cmd  drop 
-[then]
-\   70640 cmd drop \ stream #
-\   20011 cmd drop \ format
-;
-
-: blast-sound ( -- )
-   4 to sd#
-   init-square-wave
-   init-widgets
-   test-stream-output
-   10 to node
-\   70640 cmd drop \ stream #
-\   20011 cmd drop \ format
-   via-extra
-   start-stream
-\   3b024 cmd drop \ volume (low)
-;
-
-: quiet ( -- )
-   15 to node  3b080 cmd drop
-;
-
-: dma-positions ( -- )
-   dma-pos /dma-pos dump
-;
-
-\ sweep
-
-0 value sweep
-0 value /sweep
-
-: load-sweep ( -- )
-   " sweep" find-drop-in  0= abort" can't find sweep drop-in"
-   to /sweep to sweep
-;
-
-: copy-sweep ( -- )
-   sweep 0= if  load-sweep  then
-   sweep buffers /sweep move
-;
-
-: sweep-stream-output ( -- )
-   reset-stream
-   /sweep sound-len!
-   /sweep sdcbl rl! \ buffer length
-   440000 sdctl rl!   \ stream 4
-   1 sdlvi rw!
-\   #buffers 1 -  sdlvi rw!
-\   #buffers 1 -  sdlvi rw!
-   bdl-phys     sdbdpl rl!
-   0            sdbdpu rl!
-   0011 sdfmt rw! \ 16-bit 
-;
-
-: play-sweep ( -- )
-   4 to sd#
-   copy-sweep
-   init-widgets
-   copy-sweep
-   sweep-stream-output
-   copy-sweep
-   10 to node
-   70640 cmd drop \ stream #
-   20011 cmd drop \ format
-   copy-sweep
-   start-stream
-   copy-sweep
-   3b024 cmd drop \ volume (low)
-;   
-
-[ifndef] hdaudio-loaded
-dend
-select /hdaudio
-[else]
-dev /hdaudio close open
-[then]
-
-create hdaudio-loaded
-
+: shh ( -- ) 10 to node  3b080 cmd drop ;
 
 
 
@@ -594,7 +564,7 @@ param: 09 widget-caps
 param: 0a pcm-support
 param: 0b stream-formats
 param: 0c pin-caps
-\ param: 0d amp-caps
+param: 0d amp-caps
 param: 0e connections
 param: 0f power-states
 param: 10 processing-caps
@@ -695,4 +665,12 @@ param: 13 volume-caps
 ;
 
 ." loaded" cr
+
+[ifndef] hdaudio-loaded
+select /hdaudio
+[else]
+( close open ) select /hdaudio
+[then]
+
+create hdaudio-loaded
 
