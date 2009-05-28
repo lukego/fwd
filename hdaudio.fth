@@ -1,8 +1,7 @@
-dl
 \ Intel HD Audio driver (work in progress)  -*- forth -*-
 \ Copyright 2009 Luke Gorrie <luke@bup.co.nz>
 
-warning off
+\ warning off
 
 \ Section and subsection comments - for Emacs
 : \\  postpone \ ; immediate
@@ -270,7 +269,7 @@ d# 256 /bd * value /bdl
 \ Sound buffers are allocated in contiguous memory.
 0 value buffers
 0 value buffers-phys
-h# 100000 constant /buffers
+h# 80000 constant /buffers
 
 : buffer-descriptor ( n -- adr ) /bd * bdl + ;
 \ : buffer ( n -- adr ) /buffer * buffers + ;
@@ -330,7 +329,13 @@ d# 4096 value /dma-pos
    8 0 do  i to sd#  1c sdsts rb!  loop
 ;
 
-: init-all ( -- ) init-corb init-rirb init-sound-buffers ;
+: via-hack ( -- )
+    2 to node  70500 cmd drop
+   11 to node  70500 cmd drop
+   19 to node  70500 cmd drop
+;
+
+: init-all ( -- ) init-corb init-rirb init-sound-buffers via-hack ;
 
 : init ( -- ) ;
 
@@ -413,16 +418,92 @@ d# 4096 value /dma-pos
    0011 sdfmt rw! \ 16-bit 
 ;
 
+: via-extra ( -- )
+[ifdef] oinkoink
+   01 to node 705 8 lshift 0 or  cmd drop \ set power state
+   10 to node 705 8 lshift 0 or  cmd drop \ ...
+   11 to node 705 8 lshift 0 or  cmd drop 
+   12 to node 705 8 lshift 0 or  cmd drop 
+   14 to node 705 8 lshift 0 or  cmd drop 
+   15 to node 705 8 lshift 0 or  cmd drop 
+   16 to node 705 8 lshift 0 or  cmd drop 
+   17 to node 705 8 lshift 0 or  cmd drop 
+   18 to node 705 8 lshift 0 or  cmd drop 
+   19 to node 705 8 lshift 0 or  cmd drop 
+   1a to node 705 8 lshift 0 or  cmd drop 
+   1b to node 705 8 lshift 0 or  cmd drop 
+   1c to node 705 8 lshift 0 or  cmd drop 
+   1d to node 705 8 lshift 0 or  cmd drop 
+   1e to node 705 8 lshift 0 or  cmd drop 
+   1f to node 705 8 lshift 0 or  cmd drop 
+   20 to node 705 8 lshift 0 or  cmd drop 
+   21 to node 705 8 lshift 0 or  cmd drop 
+   22 to node 705 8 lshift 0 or  cmd drop 
+   23 to node 705 8 lshift 0 or  cmd drop 
+   24 to node 705 8 lshift 0 or  cmd drop 
+[then]
+   14 to node 300 8 lshift 6006 or  cmd drop \ set volume
+   14 to node 300 8 lshift 5006 or  cmd drop \ ...
+   23 to node 300 8 lshift 6004 or  cmd drop 
+   23 to node 300 8 lshift 5004 or  cmd drop 
+   17 to node 300 8 lshift a004 or  cmd drop 
+   17 to node 300 8 lshift 9004 or  cmd drop 
+   18 to node 300 8 lshift a004 or  cmd drop 
+   18 to node 300 8 lshift 9004 or  cmd drop 
+   14 to node 300 8 lshift 6200 or  cmd drop 
+   14 to node 300 8 lshift 5200 or  cmd drop 
+   10 to node 300 8 lshift a03e or  cmd drop 
+   10 to node 300 8 lshift 903e or  cmd drop 
+   10 to node 706 8 lshift 40 or  cmd drop   \ converter stream (4)
+   10 to node 200 8 lshift 11 or  cmd drop   \ converter format
+[ifdef] oinkoink
+   7  to node 300 8 lshift 701d or cmd  drop \ get connection list
+   18 to node 300 8 lshift 7003 or cmd  drop \ volume = 3
+   18 to node 707 8 lshift 24 or   cmd  drop \ pin control
+   24 to node 701 8 lshift 0 or    cmd  drop \ set connection
+   24 to node 300 8 lshift 7000 or cmd  drop \ set volume
+   24 to node 300 8 lshift b000 or cmd  drop \ set volume
+   c  to node 701 8 lshift 0 or    cmd  drop \ set connection
+   c  to node 300 8 lshift 7000 or cmd  drop \ set volume
+   c  to node 300 8 lshift b000 or cmd  drop \ set volume
+   14 to node 701 8 lshift 0 or    cmd  drop \ set connection
+   14 to node 300 8 lshift 7000 or cmd  drop \ set volume
+   14 to node 300 8 lshift b000 or cmd  drop \ set volume
+   14 to node 300 8 lshift b000 or cmd  drop \ set volume
+   14 to node 707 8 lshift 40 or   cmd  drop \ pin control
+   c  to node 701 8 lshift 0 or    cmd  drop \ set connection
+   c  to node 300 8 lshift 7000 or cmd  drop \ set volume
+   c  to node 300 8 lshift b000 or cmd  drop \ set volume
+\[then]
+   15 to node 701 8 lshift 0 or    cmd  drop \ set connection
+   15 to node 300 8 lshift 7000 or cmd  drop \ set volume
+   15 to node 300 8 lshift b000 or cmd  drop \ set volume
+   15 to node 300 8 lshift b000 or cmd  drop \ set volume
+   15 to node 707 8 lshift c0 or   cmd  drop \ pin control
+\[ifdef] oinkoink
+   7  to node 701 8 lshift 0 or    cmd  drop \ set connection
+\[then]
+   1  to node 705 8 lshift 0 or    cmd  drop \ set power state
+   2  to node 706 8 lshift 40 or   cmd  drop \ converter stream (4)
+   2  to node 200 8 lshift 11 or   cmd  drop \ converter format
+\   2  to node 706 8 lshift 0 or    cmd  drop \ converter stream
+\   2  to node 200 8 lshift 0 or    cmd  drop 
+[then]
+\   70640 cmd drop \ stream #
+\   20011 cmd drop \ format
+;
+
 : blast-sound ( -- )
    4 to sd#
    init-square-wave
    init-widgets
    test-stream-output
    10 to node
-   70640 cmd drop \ stream #
-   20011 cmd drop \ format
+\   70640 cmd drop \ stream #
+\   20011 cmd drop \ format
+   via-extra
    start-stream
-   3b024 cmd drop \ volume (low)
+\   3b024 cmd drop \ volume (low)
 ;
 
 : quiet ( -- )
@@ -478,9 +559,10 @@ d# 4096 value /dma-pos
 ;   
 
 [ifndef] hdaudio-loaded
+dend
 select /hdaudio
 [else]
-close open
+dev /hdaudio close open
 [then]
 
 create hdaudio-loaded
@@ -613,12 +695,4 @@ param: 13 volume-caps
 ;
 
 ." loaded" cr
-
-
-: via-hack ( -- )
-    2 to node  70500 cmd drop
-   11 to node  70500 cmd drop
-   19 to node  70500 cmd drop
-;
-
 
