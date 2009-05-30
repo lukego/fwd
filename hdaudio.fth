@@ -1,7 +1,7 @@
 \ Intel HD Audio driver (work in progress)  -*- forth -*-
 \ Copyright 2009 Luke Gorrie <luke@bup.co.nz>
 
-warning off
+\ warning off
 
 \ Section and subsection comments - for Emacs
 : \\  postpone \ ; immediate
@@ -76,6 +76,7 @@ my-address my-space encode-phys
 
 \\\ Stream Descriptors
 \ Default: 48kHz 16bit stereo
+48.000 value sample-rate
 0 value sample-base
 0 value sample-mul
 0 value sample-div
@@ -106,7 +107,6 @@ my-address my-space encode-phys
 \ Stream descriptor index. 
 4 constant sd#
 : sd+ ( offset -- adr ) sd# h# 20 * + au + ;
-: sd++ ( offset -- adr ) sd# h# 20 * + au + 80 + ;
 
 : sdctl   h# 80 sd+ ;
 : sdsts   h# 83 sd+ ;
@@ -140,10 +140,6 @@ my-address my-space encode-phys
 
 \\ CORB/RIRB command interface
 \ DMA-based circular command / response buffers.
-
-\ XXX I have hard-coded the buffers to be the maximum number of
-\ entries. That's all my EEE supports and I was too lazy to make a
-\ dynamic selection. -luke
 
 \\\ CORB - Command Output Ring Buffer
 
@@ -276,38 +272,6 @@ d# 256 2* cells constant /rirb
 : init-widgets ( -- ) ['] setup-widget do-tree ;
 
 \\ Streams
-\\\ Buffer Descriptor List
- 
-struct ( buffer descriptor )
-    4 field >bd-laddr
-    4 field >bd-uaddr
-    4 field >bd-len
-    4 field >bd-ioc
-constant /bd
-
-0 value bdl
-0 value bdl-phys
-d# 256 /bd * value /bdl
-
-: alloc-bdl ( -- )
-    /bdl dma-alloc to bdl
-    bdl /bdl 0 fill
-    bdl /bdl true dma-map-in to bdl-phys
-;
-
-\\\ Sound buffers
-\ Sound buffers are allocated in contiguous memory.
-
-: buffer-descriptor ( n -- adr ) /bd * bdl + ;
-\ : buffer ( n -- adr ) /buffer * buffers + ;
-\ : buffer-phys ( n -- adr ) /buffer * buffers-phys + ;
-
-: init-sound-buffers ( -- )
-   alloc-bdl
-;
-
-: sound-len! ( u -- ) 0 buffer-descriptor >bd-len ! ;
-
 \\\ Starting and stopping channels
 
 : assert-stream-reset   ( -- ) 1 sdctl rb!  begin sdctl rb@ 1 and 1 = until ;
@@ -377,7 +341,7 @@ d# 4096 value /dma-pos
    10 to node 200 8 lshift 11 or  cmd drop   \ converter format
 ;
 
-: init-all ( -- ) init-corb init-rirb init-sound-buffers via-extra ;
+: init-all ( -- ) init-corb init-rirb via-extra ;
 
 : init ( -- ) ;
 
@@ -430,7 +394,7 @@ d# 4096 value /dma-pos
 
 : set-sample-rate ( kHz -- )
    ." set sample rate: " dup .d cr
-   d# 48 / case \ find nearest supported rate
+   d# 48.000 / case \ find nearest supported rate
          0 of 44.1kHz endof
          1 of   48kHz endof
          2 of   96kHz endof
@@ -439,13 +403,20 @@ d# 4096 value /dma-pos
    endcase
 ;
 
-\ make noise
+\\ Sound buffers
+
+\\\ Sound buffer
+\ Sound buffer contains the real sound samples for both playback and recording.
 
 0 value sound-buffer
 0 value sound-buffer-phys
 0 value /sound-buffer
 
-\ filled with zeros and put at the end of the stream, to avoid instant loopback
+: install-sound-buffer ( adr len -- )
+   2dup  to /sound-buffer  to sound-buffer
+   true dma-map-in to sound-buffer-phys
+;
+
 0 value pad-buffer
 0 value pad-buffer-phys
 d# 2048 value /pad-buffer
@@ -461,37 +432,59 @@ d# 2048 value /pad-buffer
    pad-buffer /pad-buffer dma-free
 ;
 
-: setup-sound-buffer ( adr len -- )
-   to /sound-buffer to sound-buffer
-   sound-buffer /sound-buffer true dma-map-in to sound-buffer-phys
+\\\ Buffer Descriptor List
+ 
+struct ( buffer descriptor )
+    4 field >bd-laddr
+    4 field >bd-uaddr
+    4 field >bd-len
+    4 field >bd-ioc
+constant /bd
+
+0 value bdl
+0 value bdl-phys
+d# 256 /bd * value /bdl
+
+: buffer-descriptor ( n -- adr ) /bd * bdl + ;
+
+: allocate-bdl ( -- )
+    /bdl dma-alloc to bdl
+    bdl /bdl 0 fill
+    bdl /bdl true dma-map-in to bdl-phys
 ;
+
+: free-bdl ( -- ) bdl-phys /bdl dma-map-out   bdl /bdl dma-free ;
 
 : setup-bdl ( -- )
-   sound-buffer-phys  0 buffer-descriptor >bd-laddr !
-                   0  0 buffer-descriptor >bd-uaddr !
-       /sound-buffer  0 buffer-descriptor >bd-len   !
-                   1  0 buffer-descriptor >bd-ioc   !
-
-     pad-buffer-phys  1 buffer-descriptor >bd-laddr !
-                   0  1 buffer-descriptor >bd-uaddr !
-         /pad-buffer  1 buffer-descriptor >bd-len   !
-                   0  1 buffer-descriptor >bd-ioc   !
+   allocate-bdl
+   sound-buffer-phys 0 buffer-descriptor >bd-laddr !  ( len )
+   0                 0 buffer-descriptor >bd-uaddr !  ( len )
+   /sound-buffer     0 buffer-descriptor >bd-len   !  ( )
+   1                 0 buffer-descriptor >bd-ioc   !
+   \ pad buffer
+   alloc-pad-buffer
+   pad-buffer-phys  1 buffer-descriptor >bd-laddr !
+                 0  1 buffer-descriptor >bd-uaddr !
+       /pad-buffer  1 buffer-descriptor >bd-len   !
+                 0  1 buffer-descriptor >bd-ioc   !
 ;
 
-: play-stream ( -- )
-\   5 to sample-div
-   48kHz
-   reset-stream
-   /sound-buffer /pad-buffer + sdcbl rl! \ buffer length
-   440000 sdctl rl!        \ stream 4
-   1 sdlvi rw!             \ two buffers
-   1c sdsts c!             \ clear status flags
-   bdl-phys sdbdpl rl!
-          0 sdbdpu rl!
-   stream-format
+: teardown-bdl ( -- )
+   free-bdl
+   free-pad-buffer
+;
 
- sdfmt rw! \ 16-bit stereo
-   
+\\\ Stream descriptor (DMA engine)
+
+: setup-stream ( -- )
+   reset-stream
+   /sound-buffer /pad-buffer + sdcbl rl! \ bytes of stream data
+   440000 sdctl rl!               \ stream 4
+   1 sdlvi rw!                    \ two buffers
+   1c sdsts c!                    \ clear status flags
+   bdl-phys sdbdpl rl!
+   0        sdbdpu rl!
+   stream-format sdfmt rw!
    \ FIXME
    10 to node  20000 stream-format or cmd  drop
 ;
@@ -499,28 +492,144 @@ d# 2048 value /pad-buffer
 : stream-done?     ( -- ) sdsts c@ 4 and 0<> ;
 : wait-stream-done ( -- ) begin stream-done? until ;
 
+\\\ Upsampling
+
+0 value src
+0 value /src
+0 value dst
+0 value /dst
+6 value upsample-factor
+
+: dst! ( value step# sample# -- )
+   upsample-factor *  + ( value dst-sample# ) 4 * dst +  w!
+;
+
+\ Copy source sample N into a series of interpolated destination samples.
+: copy-sample ( n -- )
+   dup 4* src +              ( n src-adr )
+   dup <w@  swap 4 + <w@     ( n s1 s2 )
+   over - upsample-factor /  ( n s1 step )
+   upsample-factor 0 do
+      2dup i * +             ( n s1 step s )
+      i  4 pick              ( n s1 step s i n )
+      dst!
+   loop
+   3drop
+;
+
+: upsample-channel ( -- )
+   /src 4 /  1 do
+      i b3b0 = if i . cr then
+      i copy-sample
+   loop
+;
+
+: upsample ( adr len factor -- adr len )
+   to upsample-factor  to /src  to src
+   /src upsample-factor * to /dst
+   /dst dma-alloc to dst
+   upsample-channel \ left
+   src 2+ to src  dst 2+ to dst
+   upsample-channel \ right
+   dst 2 -  /dst ( dst dst-len )
+;
+
+\\\ Audio interface
+
+6 value scale-factor
+: upsampling? ( -- ? ) scale-factor 1 <> ;
+
 : write ( adr len -- actual )
-   alloc-pad-buffer        ( )
-   setup-sound-buffer      ( )
-   setup-bdl               ( )
-   play-stream             ( )
-   start-stream            ( )
+   48kHz
+   upsampling? if scale-factor upsample then ( adr len )
+   install-sound-buffer ( )
+   setup-bdl
+   setup-stream
+   start-stream
+   /sound-buffer        ( actual )
 ;
 
 : release-sound-buffer ( -- )
-   sound-buffer sound-buffer-phys /sound-buffer dma-map-out
+   sound-buffer-phys /sound-buffer dma-map-out
+   upsampling? if  sound-buffer /sound-buffer dma-free  then
 ;
 
 : write-done ( -- )
    wait-stream-done
    stop-stream
-   release-sound-buffer   
-   free-pad-buffer
+   free-bdl
+   release-sound-buffer
 ;
+
+\\ Microphone
+
+: open-in ( -- )
+;
+
+: record-stream ( -- )
+   0 to sd#
+   48kHz
+   reset-stream
+   /sound-buffer /pad-buffer + sdcbl rl! \ buffer length
+   100000 sdctl rl!        \ stream 1, input
+   1 sdlvi rw!             \ two buffers
+   1c sdsts c!             \ clear status flags
+   bdl-phys sdbdpl rl!
+          0 sdbdpu rl!
+   stream-format sdfmt rw!
+;
+
+: start-recording ( adr len -- )
+\   setup-sound-buffer     ( )
+   alloc-pad-buffer       ( adr len )
+   setup-bdl
+   record-stream
+   start-stream
+;
+
+0 value recbuf
+0 value recbuf-phys
+d# 65535 value /recbuf 
+
+: audio-in ( adr len -- actual )
+   debug-me
+   start-recording
+   wait-stream-done
+   release-sound-buffer
+   free-pad-buffer
+   /recbuf
+;
+
+: enable-mic ( node -- )
+   to node
+   70720 cmd drop
+;
+
+: config-audio-input ( -- )
+   14 to node
+   70610 cmd drop \ stream 1, channel 0
+   20000 stream-format or cmd  drop \ stream format
+;
+
+: record-test ( n -- )
+   to /recbuf
+   /recbuf dma-alloc to recbuf
+   recbuf /recbuf true dma-map-in to recbuf-phys
+   recbuf-phys /recbuf audio-in
+;
+
+\\ Verifying pin sense
+
+: can-pin-sense? ( -- ? ) f000c cmd 4 and 0<> ;
+: pin-sense?     ( -- ? ) f0900 cmd 8000000 and 0<> ;
+: sense-mic ( -- ) mic? can-pin-sense? and if node . pin-sense? . cr then ;
+   
+
 
 \\ Testing
 
-d# 512 d# 1024 * constant /square-wave
+\ d# 512 d# 1024 * constant /square-wave
+100 constant /square-wave
 create square-wave  /square-wave allot
 
 : init-square-wave ( -- )
