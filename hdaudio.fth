@@ -76,7 +76,7 @@ my-address my-space encode-phys
 
 \\\ Stream Descriptors
 \ Default: 48kHz 16bit stereo
-48.000 value sample-rate
+0 value scale-factor
 0 value sample-base
 0 value sample-mul
 0 value sample-div
@@ -261,11 +261,17 @@ d# 256 2* cells constant /rirb
 
 0 value amp
 
+: connection0 ( -- n ) f0200 cmd ( connection-list ) ff and ;
+
 : setup-widget ( -- )
    pin-widget? headphone? and if
       3b000 cmd drop \ unmute
       707c0 cmd drop \ pin widget: enable output, headphones
-\      connection0 to amp
+      connection0 to amp
+   then
+   pin-widget? speaker? builtin? and and if
+      3b000 cmd drop \ unmute
+      70740 cmd drop \ pin widget: enable output
    then
 ;
 
@@ -341,7 +347,7 @@ d# 4096 value /dma-pos
    10 to node 200 8 lshift 11 or  cmd drop   \ converter format
 ;
 
-: init-all ( -- ) init-corb init-rirb via-extra ;
+: init-all ( -- ) init-corb init-rirb init-widgets via-extra ;
 
 : init ( -- ) ;
 
@@ -389,18 +395,24 @@ d# 4096 value /dma-pos
 
 : set-volume ( dB -- )
    amp to node
-\   dB>steps  0dB-step +  false gain/mute!
+   dB>steps  0dB-step +  false gain/mute!
 ;
 
-: set-sample-rate ( kHz -- )
-   ." set sample rate: " dup .d cr
-   d# 48.000 / case \ find nearest supported rate
-         0 of 44.1kHz endof
-         1 of   48kHz endof
-         2 of   96kHz endof
-         3 of   96kHz endof
-       dup of  192kHz endof
-   endcase
+: low-rate? ( Hz ) dup d# 48.000 <  swap d# 44.100 <>  and ;
+
+: set-sample-rate ( Hz -- )
+   dup low-rate? if
+      48kHz  d# 48.000 swap / to scale-factor
+   else
+      1 to scale-factor
+      d# 48.000 / case \ find nearest supported rate
+         0   of 44.1kHz endof
+         1   of   48kHz endof
+         2   of   96kHz endof
+         3   of   48kHz  2 to scale-factor endof
+         dup of  192kHz endof
+      endcase
+   then
 ;
 
 \\ Sound buffers
@@ -498,7 +510,7 @@ d# 256 /bd * value /bdl
 0 value /src
 0 value dst
 0 value /dst
-6 value upsample-factor
+0 value upsample-factor
 
 : dst! ( value step# sample# -- )
    upsample-factor *  + ( value dst-sample# ) 4 * dst +  w!
@@ -536,7 +548,6 @@ d# 256 /bd * value /bdl
 
 \\\ Audio interface
 
-6 value scale-factor
 : upsampling? ( -- ? ) scale-factor 1 <> ;
 
 : write ( adr len -- actual )
@@ -577,10 +588,19 @@ d# 256 /bd * value /bdl
    bdl-phys sdbdpl rl!
           0 sdbdpu rl!
    stream-format sdfmt rw!
+   \ extra magic
+   14 to node
+   70610 cmd drop \ 
+   20010 cmd drop \ stream format 48kHz, 16-bit, mono
+\   17 to node  70101 cmd drop
+   1a to node  70721 cmd drop
+   1b to node  70721 cmd drop
+   14 to node  37040 cmd drop
+
 ;
 
 : start-recording ( adr len -- )
-\   setup-sound-buffer     ( )
+   install-sound-buffer   ( )
    alloc-pad-buffer       ( adr len )
    setup-bdl
    record-stream
@@ -595,7 +615,7 @@ d# 65535 value /recbuf
    debug-me
    start-recording
    wait-stream-done
-   release-sound-buffer
+\   release-sound-buffer
    free-pad-buffer
    /recbuf
 ;
@@ -621,7 +641,7 @@ d# 65535 value /recbuf
 \\ Verifying pin sense
 
 : can-pin-sense? ( -- ? ) f000c cmd 4 and 0<> ;
-: pin-sense?     ( -- ? ) f0900 cmd 8000000 and 0<> ;
+: pin-sense?     ( -- ? ) f0900 cmd 8000.0000 and 0<> ;
 : sense-mic ( -- ) mic? can-pin-sense? and if node . pin-sense? . cr then ;
    
 
@@ -673,7 +693,7 @@ param: 09 widget-caps
 param: 0a pcm-support
 param: 0b stream-formats
 param: 0c pin-caps
-param: 0d amp-caps
+\ param: 0d amp-caps
 param: 0e connections
 param: 0f power-states
 param: 10 processing-caps
@@ -681,7 +701,6 @@ param: 11 gpio-count
 param: 13 volume-caps
 
 
-: connection0 ( -- n ) f0200 cmd ( connection-list ) ff and ;
 : config-default ( -- c ) f1c00 cmd ;
 : connection-select ( -- n ) f0100 cmd ;
 : default-device ( -- d ) config-default d# 20 rshift  f and ;
@@ -772,6 +791,19 @@ param: 13 volume-caps
     endcase
     cr  exit? abort" "
 ;
+
+: in-amp-caps ( -- u ) f000d cmd ;
+: in-gain-steps ( -- n ) in-amp-caps  8 rshift 7f and  1+ ;
+: in-step-size  ( -- n ) in-amp-caps  d# 16 rshift  7f and  1+ ;
+: in-0dB-step   ( -- n ) in-amp-caps  7f and ;
+: in-steps/dB ( -- #steps ) in-step-size 4 * ;
+
+: .input-amp ( -- )
+   ." gain steps: " in-gain-steps . cr
+   ."  left gain:  " false true  gain/mute swap . if ." (muted)" then cr
+   ." right gain:  " false false gain/mute swap . if ." (muted)" then cr
+;
+
 
 ." loaded" cr
 
